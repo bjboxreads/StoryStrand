@@ -3,14 +3,18 @@ StoryStrand - main.py
 A whimsical, vintage-romantic book organizer built with Flet.
 
 Structure:
-  - Left/top: theme picker + search bar + import/add buttons
-  - Tabs: Authors | Series | Read | Unread | Favorites
+  - Left/top: theme picker + search bar + import/add/discover buttons
+  - Tabs: Authors | Series | Books | Read | Unread | Favorites
   - Authors tab renders a collapsible tree: Author -> branch -> books.
     A branch is either a series (grouping every book in that series)
     or a single standalone book (its own branch), as requested.
+  - Books tab is a flat, alphabetical view of every book in the library.
   - "Find Missing Book Info" button lazy-loads Google Books metadata
     for any book still missing a cover/page count, rendering 0.6-opacity
     ghost placeholders while it works (see google_books.py).
+  - "Weave My Strand" button checks each series against Google Books
+    and surfaces volumes that don't appear to be on the shelf yet as
+    ghost cards inside the Series tab, with a one-click "Add to Shelf".
 
 This file wires everything together but keeps each concern (data,
 importing, theming, Google Books) in its own module so you can hand
@@ -22,7 +26,11 @@ import flet as ft
 from models import Library, Book
 from themes import THEMES, DEFAULT_THEME, theme_names
 from importers import import_file, SUPPORTED_EXTENSIONS
-from google_books import build_lazy_load_trigger
+from google_books import (
+    build_lazy_load_trigger,
+    build_series_discovery_trigger,
+    render_missing_volume_ghost,
+)
 
 
 def main(page: ft.Page):
@@ -34,7 +42,11 @@ def main(page: ft.Page):
     }
 
     library = Library()
-    state = {"theme": DEFAULT_THEME, "search_query": ""}
+    state = {
+        "theme": DEFAULT_THEME,
+        "search_query": "",
+        "missing_by_series": {},  # series name -> [volume dicts] from Weave My Strand
+    }
 
     # ---------------- theming ----------------
 
@@ -100,12 +112,18 @@ def main(page: ft.Page):
                 content=ft.Icon(ft.Icons.MENU_BOOK, size=20, color=t["accent"]),
             )
 
+        # Subtitle carries series/#, page count, ISBN, and publisher -
+        # only whichever of those the book actually has.
         subtitle_bits = []
         if book.series:
             idx = f" #{book.series_index:g}" if book.series_index else ""
             subtitle_bits.append(f"{book.series}{idx}")
         if book.page_count:
             subtitle_bits.append(f"{book.page_count} pgs")
+        if book.publisher:
+            subtitle_bits.append(book.publisher)
+        if book.isbn:
+            subtitle_bits.append(f"ISBN {book.isbn}")
         subtitle = "  •  ".join(subtitle_bits)
 
         return ft.Container(
@@ -238,24 +256,64 @@ def main(page: ft.Page):
             spacing=8, scroll=ft.ScrollMode.AUTO, expand=True,
         )
 
+    def build_books_view() -> ft.Control:
+        """Books tab: every book, flat, alphabetical by title."""
+        books = sorted(library.all_books(), key=lambda b: b.title.lower())
+        return build_flat_list(books)
+
+    def add_missing_volume(volume: dict):
+        """Called when the user taps "Add to Shelf" on a Weave My
+        Strand ghost card - adds it as a real book and drops it from
+        the pending-discovery list for that series."""
+        library.add_book(Book(
+            title=volume["title"],
+            author=volume.get("author") or "Unknown Author",
+            series=volume.get("series"),
+            series_index=volume.get("series_index"),
+            cover_url=volume.get("cover_url", ""),
+        ))
+        series_name = volume.get("series")
+        if series_name in state["missing_by_series"]:
+            state["missing_by_series"][series_name] = [
+                v for v in state["missing_by_series"][series_name]
+                if v["title"] != volume["title"]
+            ]
+            if not state["missing_by_series"][series_name]:
+                del state["missing_by_series"][series_name]
+        refresh_all()
+
     def build_series_view() -> ft.Control:
         t = THEMES[state["theme"]]
         by_series = {}
         for b in library.all_books():
             if b.series:
                 by_series.setdefault(b.series, []).append(b)
+
+        # A series can show up here purely from a Weave My Strand
+        # discovery even before the user owns any book in it yet -
+        # otherwise a freshly-discovered series with zero owned books
+        # would have nowhere to render its ghost cards.
+        for series_name in state["missing_by_series"]:
+            by_series.setdefault(series_name, [])
+
         if not by_series:
             return ft.Container(padding=30, content=ft.Text("No series tracked yet.", italic=True, color=t["text"]))
+
         blocks = []
         for series_name, books in sorted(by_series.items(), key=lambda kv: kv[0].lower()):
             books.sort(key=lambda x: (x.series_index is None, x.series_index or 0))
+            owned_cards = [render_book_card(b) for b in books]
+            ghost_cards = [
+                render_missing_volume_ghost(v, on_add=add_missing_volume)
+                for v in state["missing_by_series"].get(series_name, [])
+            ]
             blocks.append(
                 ft.Container(
                     padding=10, border_radius=8, bgcolor=t["surface"],
                     content=ft.Column(controls=[
                         ft.Text(series_name, size=15, weight=ft.FontWeight.BOLD,
                                 color=t["text"], font_family="Vintage-Display"),
-                        ft.Column(controls=[render_book_card(b) for b in books], spacing=6),
+                        ft.Column(controls=owned_cards + ghost_cards, spacing=6),
                     ]),
                 )
             )
@@ -263,17 +321,37 @@ def main(page: ft.Page):
 
     # ---------------- add / edit dialog ----------------
 
-    def open_book_dialog(book: Book = None):
+    def open_book_dialog(book: Book = None, prefill: dict = None):
         editing = book is not None
-        title_f = ft.TextField(label="Title", value=book.title if editing else "")
-        author_f = ft.TextField(label="Author", value=book.author if editing else "")
-        series_f = ft.TextField(label="Series (optional)", value=(book.series or "") if editing else "")
+        prefill = prefill or {}
+
+        def initial(field_name, default=""):
+            if editing:
+                return getattr(book, field_name) or default
+            return prefill.get(field_name, default)
+
+        title_f = ft.TextField(label="Title", value=str(initial("title")))
+        author_f = ft.TextField(label="Author", value=str(initial("author")))
+        series_f = ft.TextField(label="Series (optional)", value=str(initial("series")))
+        series_idx_val = initial("series_index")
         series_idx_f = ft.TextField(
             label="# in series (optional)",
-            value=str(book.series_index) if editing and book.series_index else "",
+            value=str(series_idx_val) if series_idx_val else "",
         )
-        genre_f = ft.TextField(label="Genre (optional)", value=book.genre if editing else "")
-        cover_f = ft.TextField(label="Cover image URL (optional)", value=book.cover_url if editing else "")
+        genre_f = ft.TextField(label="Genre (optional)", value=str(initial("genre")))
+        cover_f = ft.TextField(label="Cover image URL (optional)", value=str(initial("cover_url")))
+        isbn_f = ft.TextField(label="ISBN (optional)", value=str(initial("isbn")))
+        publisher_f = ft.TextField(label="Publisher (optional)", value=str(initial("publisher")))
+        page_count_val = initial("page_count")
+        page_count_f = ft.TextField(
+            label="Page count (optional)",
+            value=str(page_count_val) if page_count_val else "",
+        )
+        published_f = ft.TextField(label="Published date (optional)", value=str(initial("published")))
+        description_f = ft.TextField(
+            label="Description (optional)", value=str(initial("description")),
+            multiline=True, min_lines=2, max_lines=5,
+        )
 
         def save(e):
             idx_val = None
@@ -283,25 +361,38 @@ def main(page: ft.Page):
                 except ValueError:
                     idx_val = None
 
+            page_count_num = None
+            if page_count_f.value.strip():
+                try:
+                    page_count_num = int(float(page_count_f.value.strip()))
+                except ValueError:
+                    page_count_num = None
+
+            shared_fields = dict(
+                series=series_f.value.strip() or None,
+                series_index=idx_val,
+                genre=genre_f.value.strip(),
+                cover_url=cover_f.value.strip(),
+                isbn=isbn_f.value.strip(),
+                publisher=publisher_f.value.strip(),
+                page_count=page_count_num,
+                published=published_f.value.strip(),
+                description=description_f.value.strip(),
+            )
+
             if editing:
                 library.update_book(
                     book.id,
                     title=title_f.value.strip() or book.title,
                     author=author_f.value.strip() or "Unknown Author",
-                    series=series_f.value.strip() or None,
-                    series_index=idx_val,
-                    genre=genre_f.value.strip(),
-                    cover_url=cover_f.value.strip(),
+                    **shared_fields,
                 )
             else:
                 library.add_book(Book(
                     title=title_f.value.strip(),
                     author=author_f.value.strip() or "Unknown Author",
-                    series=series_f.value.strip() or None,
-                    series_index=idx_val,
-                    genre=genre_f.value.strip(),
-                    cover_url=cover_f.value.strip(),
                     manual_entry=True,
+                    **shared_fields,
                 ))
             page.close(dialog)
             refresh_all()
@@ -310,8 +401,11 @@ def main(page: ft.Page):
             modal=True,
             title=ft.Text("Edit Book" if editing else "Add Book Manually"),
             content=ft.Column(
-                controls=[title_f, author_f, series_f, series_idx_f, genre_f, cover_f],
-                tight=True, width=380, scroll=ft.ScrollMode.AUTO,
+                controls=[
+                    title_f, author_f, series_f, series_idx_f, genre_f, cover_f,
+                    isbn_f, publisher_f, page_count_f, published_f, description_f,
+                ],
+                tight=True, width=380, scroll=ft.ScrollMode.AUTO, height=460,
             ),
             actions=[
                 ft.TextButton("Cancel", on_click=lambda e: page.close(dialog)),
@@ -353,6 +447,23 @@ def main(page: ft.Page):
             allowed_extensions=[ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS],
         )
 
+    # ---------------- Weave My Strand (series discovery) ----------------
+
+    def handle_missing_results(missing_by_series: dict):
+        state["missing_by_series"] = missing_by_series
+        total = sum(len(v) for v in missing_by_series.values())
+        if total:
+            page.open(ft.SnackBar(
+                ft.Text(f"Found {total} possible missing volume(s) — check the Series tab.")
+            ))
+        else:
+            page.open(ft.SnackBar(ft.Text("Didn't find any volumes you're missing. Your strand is complete!")))
+        refresh_all()
+
+    weave_button = build_series_discovery_trigger(
+        page=page, library=library, on_results=handle_missing_results,
+    )
+
     # ---------------- search + tabs ----------------
 
     search_field = ft.TextField(
@@ -365,7 +476,7 @@ def main(page: ft.Page):
     body_holder = ft.Container(expand=True)
     lazy_load_column = ft.Column(spacing=6)  # ghost placeholders render here
 
-    TAB_LABELS = ["Authors", "Series", "Read", "Unread", "Favorites"]
+    TAB_LABELS = ["Authors", "Series", "Books", "Read", "Unread", "Favorites"]
     tab_row = ft.Row(spacing=8)
 
     def current_tab_index():
@@ -419,8 +530,12 @@ def main(page: ft.Page):
             elif idx == 1:
                 content = build_flat_list([b for b in library.search(query) if b.series])
             elif idx == 2:
-                content = build_flat_list([b for b in library.search(query) if b.read])
+                content = build_flat_list(
+                    sorted(library.search(query), key=lambda b: b.title.lower())
+                )
             elif idx == 3:
+                content = build_flat_list([b for b in library.search(query) if b.read])
+            elif idx == 4:
                 content = build_flat_list([b for b in library.search(query) if not b.read])
             else:
                 content = build_flat_list([b for b in library.search(query) if b.favorite])
@@ -430,8 +545,10 @@ def main(page: ft.Page):
             elif idx == 1:
                 content = build_series_view()
             elif idx == 2:
-                content = build_flat_list(library.read_books())
+                content = build_books_view()
             elif idx == 3:
+                content = build_flat_list(library.read_books())
+            elif idx == 4:
                 content = build_flat_list(library.unread_books())
             else:
                 content = build_flat_list(library.favorites())
@@ -463,7 +580,7 @@ def main(page: ft.Page):
         render_book_card=render_book_card,
         on_book_updated=lambda b: None,
     )
-    lazy_load_trigger_row = ft.Row(controls=[lazy_load_trigger])
+    lazy_load_trigger_row = ft.Row(controls=[lazy_load_trigger, weave_button], wrap=True)
 
     header = ft.Container(
         padding=16,
