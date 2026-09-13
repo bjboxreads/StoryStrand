@@ -18,7 +18,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install Flet
-        run: pip install "flet[all]"
+        run: pip install "flet[all]==0.85.3"
 
       - name: Install app dependencies
         run: pip install -r requirements.txt
