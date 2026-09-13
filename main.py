@@ -122,6 +122,8 @@ def main(page: ft.Page):
         "search_query": "",
         "missing_by_series": {},  # series name -> [volume dicts] from Weave My Strand
         "visible_count": PAGE_SIZE,  # FIX: how many cards build_flat_list/build_series_view render before "Load more"
+        "expanded_authors": set(),   # FIX: authors currently expanded in the Authors tab tree, survives refresh_body()
+        "expanded_branches": set(),  # FIX: (author, branch_key) pairs currently expanded, survives refresh_body()
     }
 
     # ---------------- theming ----------------
@@ -179,7 +181,11 @@ def main(page: ft.Page):
             cover = ft.Container(
                 width=44, height=64, border_radius=cover_radius,
                 clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                content=ft.Image(src=book.cover_url, width=44, height=64, fit=ft.BoxFit.COVER),
+                # FIX: was ft.BoxFit.COVER, which doesn't exist on this
+                # Flet version and crashed rendering for every book that
+                # had a cover_url - i.e. every tab except Authors (no
+                # branches expanded yet) and Favorites (empty list).
+                content=ft.Image(src=book.cover_url, width=44, height=64, fit=ft.ImageFit.COVER),
             )
         else:
             cover = ft.Container(
@@ -263,13 +269,24 @@ def main(page: ft.Page):
 
         FIX (performance): book cards for a branch are now only built
         the first time that branch is expanded, not upfront for every
-        branch of every author on every call to build_tree(). Each
-        branch's book_column starts empty; the toggle handler fills it
-        in (and caches the built controls) the first time it's opened.
-        This is what actually fixes the "slow and glitchy" tab/search
-        lag - previously render_book_card() ran for all 672+ books on
-        every single build_tree() call, whether or not any branch was
-        even expanded to show them.
+        branch of every author on every call to build_tree(). This is
+        what fixes the "slow and glitchy" tab/search lag - previously
+        render_book_card() ran for all 672+ books on every single
+        build_tree() call, whether or not any branch was even expanded
+        to show them.
+
+        FIX (state persistence): which authors/branches are expanded is
+        now tracked in state["expanded_authors"] / state["expanded_branches"]
+        instead of living only on the Column objects built here. Every
+        call to build_tree() constructs brand-new Column instances, so
+        the old approach (col.visible flipped by the toggle) reset to
+        fully collapsed on every single refresh - meaning any tap on a
+        book's favorite/read/edit/delete icon (which calls refresh_all())
+        silently collapsed the entire tree back shut, since a whole new
+        set of visible=False columns replaced the ones you had open.
+        That's what made book taps look like "nothing happens." Reading
+        expanded state from `state` on every build instead means a
+        refresh re-expands exactly what was open before.
         """
         t = THEMES[state["theme"]]
         tree_data = library.tree()
@@ -293,29 +310,39 @@ def main(page: ft.Page):
                     # colliding at the front with #1.
                     books = sorted(books, key=lambda b: (b.series_index is None, b.series_index or 0))
 
-                # FIX (performance): start empty instead of
-                # [render_book_card(b) for b in books] - building all
-                # those cards eagerly here is what caused the lag, since
-                # this happens for every branch, every author, on every
-                # build_tree() call regardless of whether the branch is
-                # even expanded.
+                # FIX: state key survives across build_tree() calls even
+                # though the Column objects themselves don't.
+                branch_state_key = (author, branch_key)
+                branch_expanded = branch_state_key in state["expanded_branches"]
+
+                # FIX (performance + state persistence): only build cards
+                # for branches that are actually expanded right now - not
+                # all of them (perf), and re-derived from `state` on every
+                # call rather than relying on a cache that gets thrown
+                # away the moment build_tree() runs again (persistence).
                 book_column = ft.Column(
-                    controls=[],
+                    controls=[render_book_card(b) for b in books] if branch_expanded else [],
                     spacing=6,
-                    visible=False,
+                    visible=branch_expanded,
                 )
 
-                def make_toggle(col=book_column, branch_books=books):
+                def make_toggle(col=book_column, branch_books=books, skey=branch_state_key):
                     def _toggle(e):
-                        col.visible = not col.visible
-                        # FIX (performance): build (and cache) the cards
-                        # only the first time this branch is opened.
-                        # Later toggles just flip visibility on the
-                        # already-built controls - no rebuild cost.
-                        if col.visible and not col.controls:
-                            col.controls = [render_book_card(b) for b in branch_books]
-                        e.control.icon = ft.Icons.EXPAND_LESS if col.visible else ft.Icons.EXPAND_MORE
-                        page.update()
+                        try:
+                            if skey in state["expanded_branches"]:
+                                state["expanded_branches"].discard(skey)
+                                col.visible = False
+                            else:
+                                state["expanded_branches"].add(skey)
+                                col.controls = [render_book_card(b) for b in branch_books]
+                                col.visible = True
+                            e.control.icon = ft.Icons.EXPAND_LESS if col.visible else ft.Icons.EXPAND_MORE
+                            page.update()
+                        except Exception as ex:
+                            import traceback
+                            traceback.print_exc()
+                            page.open(ft.SnackBar(ft.Text(f"branch toggle failed: {ex}"), bgcolor="red"))
+                            page.update()
                     return _toggle
 
                 # FIX: branch header is now a rounded box ("node"),
@@ -334,7 +361,10 @@ def main(page: ft.Page):
                             ),
                             ft.Container(expand=True),
                             ft.Text(f"({len(books)})", size=11, color=t["muted"]),
-                            ft.IconButton(icon=ft.Icons.EXPAND_MORE, icon_size=18, on_click=make_toggle()),
+                            ft.IconButton(
+                                icon=ft.Icons.EXPAND_LESS if branch_expanded else ft.Icons.EXPAND_MORE,
+                                icon_size=18, on_click=make_toggle(),
+                            ),
                         ],
                     ),
                 )
@@ -358,13 +388,26 @@ def main(page: ft.Page):
             if not branch_controls:
                 continue
 
-            author_column = ft.Column(controls=branch_controls, spacing=10, visible=False)
+            # FIX: same persistence approach for the author-level toggle.
+            author_expanded = author in state["expanded_authors"]
+            author_column = ft.Column(controls=branch_controls, spacing=10, visible=author_expanded)
 
-            def make_author_toggle(col=author_column):
+            def make_author_toggle(col=author_column, akey=author):
                 def _toggle(e):
-                    col.visible = not col.visible
-                    e.control.icon = ft.Icons.EXPAND_LESS if col.visible else ft.Icons.EXPAND_MORE
-                    page.update()
+                    try:
+                        if akey in state["expanded_authors"]:
+                            state["expanded_authors"].discard(akey)
+                            col.visible = False
+                        else:
+                            state["expanded_authors"].add(akey)
+                            col.visible = True
+                        e.control.icon = ft.Icons.EXPAND_LESS if col.visible else ft.Icons.EXPAND_MORE
+                        page.update()
+                    except Exception as ex:
+                        import traceback
+                        traceback.print_exc()
+                        page.open(ft.SnackBar(ft.Text(f"author toggle failed: {ex}"), bgcolor="red"))
+                        page.update()
                 return _toggle
 
             total_books = sum(len(v) for v in branches.values())
@@ -375,7 +418,10 @@ def main(page: ft.Page):
                             font_family="Cormorant"),
                     ft.Container(expand=True),
                     ft.Text(f"({total_books})", size=12, color=t["muted"]),
-                    ft.IconButton(icon=ft.Icons.EXPAND_MORE, on_click=make_author_toggle()),
+                    ft.IconButton(
+                        icon=ft.Icons.EXPAND_LESS if author_expanded else ft.Icons.EXPAND_MORE,
+                        on_click=make_author_toggle(),
+                    ),
                 ],
             )
             # FIX: author node also has its branch boxes hanging directly
@@ -833,7 +879,14 @@ def main(page: ft.Page):
     )
 
     body_holder = ft.Container(expand=True)
-    lazy_load_column = ft.Column(spacing=6)  # ghost placeholders render here
+    # FIX: bounded height + its own internal scroll. This previously had
+    # no size limit and got moved into the fixed header (see below) - with
+    # ~370 ghost placeholders stacking up during a big "Find Missing Book
+    # Info" run, an unbounded column there made the header itself balloon
+    # to thousands of pixels tall (headers aren't inside the page's main
+    # scroll region), which is exactly what made the app look frozen and
+    # unscrollable with only the first couple of ghost cards visible.
+    lazy_load_column = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, height=220)
 
     TAB_LABELS = ["Authors", "Series", "Books", "Read", "Unread", "Favorites"]
     tab_row = ft.Row(spacing=8, wrap=True, run_spacing=8)
