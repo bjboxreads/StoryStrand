@@ -31,6 +31,12 @@ colored left-edge stripes) that made the old design read as distinct.
 2. FIX: build_header_text() and build_stats_row() now call page.update()
    themselves instead of relying on a later, unrelated page.update()
    call to flush their changes to the client.
+3. FIX: importing a file now offers to fetch metadata (cover, genre,
+   description, publisher info) for the newly-added books right away,
+   using a concurrent (4-worker) fetch with a visible progress dialog -
+   matching the old app's Import-tab checkboxes + "Looked up X of Y..."
+   status, instead of new imports sitting metadata-less until the user
+   taps "Find Missing Book Info" themselves.
 """
 
 import threading
@@ -43,6 +49,7 @@ from importers import import_file, SUPPORTED_EXTENSIONS
 from google_books import (
     build_lazy_load_trigger,
     build_series_discovery_trigger,
+    fetch_missing_metadata_parallel,
     render_missing_volume_ghost,
 )
 
@@ -487,11 +494,13 @@ def main(page: ft.Page):
         def _run_import():
             imported_count = 0
             errors = []
+            newly_added: list[Book] = []
             for f in files:
                 try:
                     new_books = import_file(f.path)
                     for b in new_books:
                         library.add_book(b, persist=False)
+                        newly_added.append(b)
                     imported_count += len(new_books)
                 except Exception as ex:
                     errors.append(f"{f.name}: {ex}")
@@ -502,6 +511,11 @@ def main(page: ft.Page):
             refresh_all()
             page.open(ft.SnackBar(ft.Text(msg)))
             page.update()
+            # FIX: offer to fetch metadata for the books that just came
+            # in, instead of leaving them metadata-less until the user
+            # remembers to tap "Find Missing Book Info" later.
+            if newly_added:
+                open_fetch_metadata_dialog(newly_added)
 
         threading.Thread(target=_run_import, daemon=True).start()
 
@@ -512,6 +526,96 @@ def main(page: ft.Page):
             allow_multiple=True,
             allowed_extensions=[ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS],
         )
+
+    # ---------------- FIX: post-import metadata fetch ----------------
+
+    def open_fetch_metadata_dialog(new_books: list[Book]):
+        """FIX: shown right after an import finishes. Mirrors the old
+        app's Import-tab checkboxes (all checked by default) so
+        fetching metadata for new books stays one click, but the user
+        can still skip it or turn off individual fields."""
+        count = len(new_books)
+        cover_cb = ft.Checkbox(label="Fetch cover art", value=True)
+        desc_cb = ft.Checkbox(label="Fetch descriptions", value=True)
+        genre_cb = ft.Checkbox(label="Fetch genres", value=True)
+        pub_cb = ft.Checkbox(
+            label="Fetch publisher, page count, and publication date", value=True
+        )
+
+        def skip(ev):
+            page.close(dlg)
+
+        def start_fetch(ev):
+            page.close(dlg)
+            run_metadata_fetch(
+                new_books,
+                want_cover=cover_cb.value,
+                want_description=desc_cb.value,
+                want_genre=genre_cb.value,
+                want_pubinfo=pub_cb.value,
+            )
+
+        dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(f"Fetch metadata for {count} new book(s)?"),
+            content=ft.Column(
+                controls=[
+                    ft.Text(
+                        "Look up covers, genres, and publisher info from "
+                        "Google Books and OpenLibrary."
+                    ),
+                    cover_cb, desc_cb, genre_cb, pub_cb,
+                ],
+                tight=True,
+                width=340,
+            ),
+            actions=[
+                ft.TextButton("Skip", on_click=skip),
+                ft.FilledButton("Fetch Metadata", on_click=start_fetch),
+            ],
+        )
+        page.open(dlg)
+
+    def run_metadata_fetch(new_books: list[Book], want_cover, want_description,
+                            want_genre, want_pubinfo):
+        """FIX: runs the concurrent (4-worker) fetch from google_books.py
+        against the newly imported books, with a live progress dialog -
+        "Looked up X of Y book(s)..." - instead of either blocking the
+        UI or leaving the user with no sense of whether it's working."""
+        progress_text = ft.Text("Starting lookup…")
+        progress_dlg = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Fetching metadata"),
+            content=ft.Column(
+                controls=[progress_text, ft.ProgressBar()],
+                tight=True, width=300,
+            ),
+        )
+        page.open(progress_dlg)
+        page.update()
+
+        def on_progress(done, total):
+            progress_text.value = f"Looked up {done} of {total} book(s)…"
+            page.update()
+
+        def _run():
+            stats = fetch_missing_metadata_parallel(
+                new_books,
+                want_cover=want_cover,
+                want_description=want_description,
+                want_genre=want_genre,
+                want_pubinfo=want_pubinfo,
+                on_progress=on_progress,
+            )
+            library.save()
+            page.close(progress_dlg)
+            refresh_all()
+            page.open(ft.SnackBar(
+                ft.Text(f"Found metadata for {stats['found']} of {stats['total']} book(s).")
+            ))
+            page.update()
+
+        threading.Thread(target=_run, daemon=True).start()
 
     # ---------------- Weave My Strand (series discovery) ----------------
 
