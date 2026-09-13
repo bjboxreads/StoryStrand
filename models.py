@@ -9,13 +9,27 @@ that author in the tree view.
 
 from __future__ import annotations
 import json
+import re
 import uuid
 import os
 from dataclasses import dataclass, field, asdict
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Set, Tuple
 
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "library.json")
+DISMISSED_FILE = os.path.join(os.path.dirname(__file__), "dismissed_missing.json")
+
+
+def normalize_title_key(title: str) -> str:
+    """Normalize a title for fuzzy-duplicate matching: strips
+    parenthetical/bracketed annotations (edition info, series tags,
+    "(Unabridged)", etc.) and punctuation, so e.g. "Mistborn: The Final
+    Empire (2016 Ed.)" and "Mistborn: The Final Empire" key the same.
+    Used both to dedupe Google Books' multiple editions of one title
+    and to match a discovered volume against what's already owned."""
+    text = re.sub(r"[\(\[].*?[\)\]]", "", title or "")
+    text = re.sub(r"[^\w\s]", "", text.lower())
+    return re.sub(r"\s+", " ", text).strip()
 
 
 @dataclass
@@ -49,10 +63,13 @@ class Book:
 class Library:
     """In-memory book collection with JSON persistence."""
 
-    def __init__(self, path: str = DATA_FILE):
+    def __init__(self, path: str = DATA_FILE, dismissed_path: str = DISMISSED_FILE):
         self.path = path
+        self.dismissed_path = dismissed_path
         self.books: Dict[str, Book] = {}
+        self.dismissed: Set[Tuple[str, str]] = set()  # (series_lower, normalized_title)
         self.load()
+        self._load_dismissed()
 
     # ---------- persistence ----------
 
@@ -70,6 +87,34 @@ class Library:
     def save(self) -> None:
         with open(self.path, "w", encoding="utf-8") as f:
             json.dump([b.to_dict() for b in self.books.values()], f, indent=2)
+
+    def _load_dismissed(self) -> None:
+        if os.path.exists(self.dismissed_path):
+            try:
+                with open(self.dismissed_path, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                self.dismissed = {(item["series"], item["title_key"]) for item in raw}
+            except (json.JSONDecodeError, OSError, KeyError):
+                self.dismissed = set()
+        else:
+            self.dismissed = set()
+
+    def _save_dismissed(self) -> None:
+        with open(self.dismissed_path, "w", encoding="utf-8") as f:
+            json.dump(
+                [{"series": s, "title_key": k} for s, k in sorted(self.dismissed)],
+                f, indent=2,
+            )
+
+    def is_missing_dismissed(self, series: str, title: str) -> bool:
+        return (series.strip().lower(), normalize_title_key(title)) in self.dismissed
+
+    def dismiss_missing_volume(self, series: str, title: str) -> None:
+        """Weave My Strand won't surface this (series, title) again -
+        used for the "Not in this series" button on a discovery ghost
+        card that turned out to be a false positive."""
+        self.dismissed.add((series.strip().lower(), normalize_title_key(title)))
+        self._save_dismissed()
 
     # ---------- CRUD ----------
 
