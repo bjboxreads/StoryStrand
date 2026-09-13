@@ -1,138 +1,69 @@
 """
-StoryStrand - themes.py
-Color themes, ported from SpineVesper's palette (data.py THEMES), plus
-one StoryStrand-original: Enchanted Library.
+themes.py — StoryStrand color palettes.
 
-SpineVesper used CSS-custom-property-style keys: page/surface/surface2/
-card/text/muted/accent/accent2/line. This file's mapping onto
-StoryStrand's key set:
-    page    -> background
-    card    -> primary       (top-level author band)
-    accent2 -> secondary     (SpineVesper's "read"-status highlight color)
-    surface -> surface       (book card background - same role in both)
-    text    -> text
-    accent  -> accent
-    line    -> branch_line
-    accent  -> favorite      (SpineVesper always used its accent color for the star icon)
+Ported from the old app's `data.THEMES`. Same 10 named palettes,
+same key names (page/surface/surface2/card/text/muted/accent/accent2/
+line) so the rest of the UI can stay palette-agnostic and any widget
+that expects these keys just works.
 
-SpineVesper's `surface2` (nested series-row band) and `muted` (caption
-text) have no equivalent slot here and are dropped rather than
-force-fit into an unrelated key.
+Usage in main.py:
+
+    from themes import THEMES, DEFAULT_THEME, theme_names
+
+    def color(key):
+        return THEMES[state["theme"]][key]
 """
 
 THEMES = {
     "Emerald Grimoire": {
-        "primary": "#1B6650",
-        "secondary": "#3FCDA8",
-        "background": "#051614",
-        "surface": "#0C2B24",
-        "text": "#FFFBEF",
-        "accent": "#F2C14E",
-        "branch_line": "#E0972E",
-        "favorite": "#F2C14E",
+        "page": "#051614", "surface": "#0C2B24", "surface2": "#124A3C",
+        "card": "#1B6650", "text": "#FFFBEF", "muted": "#B9D4C6",
+        "accent": "#F2C14E", "accent2": "#3FCDA8", "line": "#E0972E",
     },
     "Gilded Midnight": {
-        "primary": "#1B5493",
-        "secondary": "#4FC3E8",
-        "background": "#04101F",
-        "surface": "#0A2242",
-        "text": "#FFF9E8",
-        "accent": "#FFC94D",
-        "branch_line": "#E8A426",
-        "favorite": "#FFC94D",
+        "page": "#04101F", "surface": "#0A2242", "surface2": "#123B6E",
+        "card": "#1B5493", "text": "#FFF9E8", "muted": "#B7CBE8",
+        "accent": "#FFC94D", "accent2": "#4FC3E8", "line": "#E8A426",
     },
     "Velvet Rose": {
-        "primary": "#731B5C",
-        "secondary": "#C77DFF",
-        "background": "#170512",
-        "surface": "#2E0A24",
-        "text": "#FFF3F8",
-        "accent": "#FF6F91",
-        "branch_line": "#E23E75",
-        "favorite": "#FF6F91",
+        "page": "#170512", "surface": "#2E0A24", "surface2": "#4F1140",
+        "card": "#731B5C", "text": "#FFF3F8", "muted": "#E3BFD2",
+        "accent": "#FF6F91", "accent2": "#C77DFF", "line": "#E23E75",
     },
     "Autumn Ember": {
-        "primary": "#873F13",
-        "secondary": "#FF6A3D",
-        "background": "#1C0D04",
-        "surface": "#361708",
-        "text": "#FFF4DE",
-        "accent": "#FFB238",
-        "branch_line": "#D9601F",
-        "favorite": "#FFB238",
+        "page": "#1C0D04", "surface": "#361708", "surface2": "#5E2A0C",
+        "card": "#873F13", "text": "#FFF4DE", "muted": "#E8C79A",
+        "accent": "#FFB238", "accent2": "#FF6A3D", "line": "#D9601F",
     },
     "Moonlit Violet": {
-        "primary": "#362D93",
-        "secondary": "#9D7BFF",
-        "background": "#08071A",
-        "surface": "#12103A",
-        "text": "#FFFAEE",
-        "accent": "#FFD54F",
-        "branch_line": "#7A5CE0",
-        "favorite": "#FFD54F",
+        "page": "#08071A", "surface": "#12103A", "surface2": "#221D66",
+        "card": "#362D93", "text": "#FFFAEE", "muted": "#C9C2ED",
+        "accent": "#FFD54F", "accent2": "#9D7BFF", "line": "#7A5CE0",
     },
     "Verdant Garden": {
-        "primary": "#157A70",
-        "secondary": "#FF7A5C",
-        "background": "#04191C",
-        "surface": "#093733",
-        "text": "#FFFAE9",
-        "accent": "#FFCD3C",
-        "branch_line": "#E85A3E",
-        "favorite": "#FFCD3C",
+        "page": "#04191C", "surface": "#093733", "surface2": "#0E5652",
+        "card": "#157A70", "text": "#FFFAE9", "muted": "#BFE0D6",
+        "accent": "#FFCD3C", "accent2": "#FF7A5C", "line": "#E85A3E",
     },
     "Old World Atlas": {
-        "primary": "#456B55",
-        "secondary": "#B7D25C",
-        "background": "#0F1A18",
-        "surface": "#1C2F2A",
-        "text": "#FFF6DC",
-        "accent": "#F0BB4E",
-        "branch_line": "#D68C2E",
-        "favorite": "#F0BB4E",
+        "page": "#0F1A18", "surface": "#1C2F2A", "surface2": "#2E4C41",
+        "card": "#456B55", "text": "#FFF6DC", "muted": "#D2DABF",
+        "accent": "#F0BB4E", "accent2": "#B7D25C", "line": "#D68C2E",
     },
     "Arcane Spell": {
-        "primary": "#332F94",
-        "secondary": "#4FE8DD",
-        "background": "#080916",
-        "surface": "#151637",
-        "text": "#FFFFFF",
-        "accent": "#FFD23F",
-        "branch_line": "#B15CFF",
-        "favorite": "#FFD23F",
+        "page": "#080916", "surface": "#151637", "surface2": "#232463",
+        "card": "#332F94", "text": "#FFFFFF", "muted": "#C9C9F2",
+        "accent": "#FFD23F", "accent2": "#4FE8DD", "line": "#B15CFF",
     },
     "Scarlet Manor": {
-        "primary": "#831A1A",
-        "secondary": "#FF7D5C",
-        "background": "#180505",
-        "surface": "#340A0A",
-        "text": "#FFF6E8",
-        "accent": "#FFC145",
-        "branch_line": "#E33A2E",
-        "favorite": "#FFC145",
+        "page": "#180505", "surface": "#340A0A", "surface2": "#5C1010",
+        "card": "#831A1A", "text": "#FFF6E8", "muted": "#EFC7B0",
+        "accent": "#FFC145", "accent2": "#FF7D5C", "line": "#E33A2E",
     },
     "Obsidian Vale": {
-        "primary": "#241E1E",
-        "secondary": "#9C9C9C",
-        "background": "#050505",
-        "surface": "#0F0D0D",
-        "text": "#F2EDEA",
-        "accent": "#8A1F2B",
-        "branch_line": "#5C141C",
-        "favorite": "#8A1F2B",
-    },
-    "Enchanted Library": {
-        # Warm parchment + gold-leaf, distinct from the other nine
-        # (which all run dark/jewel-toned) — reads like old paper and
-        # candlelight rather than a moody nightscape.
-        "primary": "#8B5E34",
-        "secondary": "#6B8F71",
-        "background": "#F4E9D8",
-        "surface": "#EBDBC0",
-        "text": "#3B2A1A",
-        "accent": "#C08A28",
-        "branch_line": "#B08B5A",
-        "favorite": "#C08A28",
+        "page": "#050505", "surface": "#0F0D0D", "surface2": "#1A1616",
+        "card": "#241E1E", "text": "#F2EDEA", "muted": "#8C8080",
+        "accent": "#8A1F2B", "accent2": "#9C9C9C", "line": "#5C141C",
     },
 }
 
