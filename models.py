@@ -31,6 +31,7 @@ class Book:
     description: str = ""
     genre: str = ""
     published: str = ""
+    publisher: str = ""
     read: bool = False
     favorite: bool = False
     manual_entry: bool = False
@@ -118,7 +119,9 @@ class Library:
             return self.all_books()
         out = []
         for b in self.books.values():
-            haystack = " ".join([b.title, b.author, b.series or "", b.genre, b.isbn]).lower()
+            haystack = " ".join(
+                [b.title, b.author, b.series or "", b.genre, b.isbn, b.publisher]
+            ).lower()
             if q in haystack:
                 out.append(b)
         return out
