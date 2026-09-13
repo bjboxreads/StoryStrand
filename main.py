@@ -591,14 +591,15 @@ def main(page: ft.Page):
         """FIX: shown right after an import finishes. Mirrors the old
         app's Import-tab checkboxes (all checked by default) so
         fetching metadata for new books stays one click, but the user
-        can still skip it or turn off individual fields."""
+        can still skip it or turn off individual fields. FIX: restyled
+        to match the app's theme and voice instead of a plain default
+        dialog with generic checkbox labels."""
+        t = THEMES[state["theme"]]
         count = len(new_books)
-        cover_cb = ft.Checkbox(label="Fetch cover art", value=True)
-        desc_cb = ft.Checkbox(label="Fetch descriptions", value=True)
-        genre_cb = ft.Checkbox(label="Fetch genres", value=True)
-        pub_cb = ft.Checkbox(
-            label="Fetch publisher, page count, and publication date", value=True
-        )
+        cover_cb = ft.Checkbox(label="🖼️  Cover art", value=True)
+        desc_cb = ft.Checkbox(label="📝  Descriptions", value=True)
+        genre_cb = ft.Checkbox(label="🏷️  Genres", value=True)
+        pub_cb = ft.Checkbox(label="📚  Publisher, pages & publish date", value=True)
 
         def skip(ev):
             page.close(dlg)
@@ -615,21 +616,33 @@ def main(page: ft.Page):
 
         dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text(f"Fetch metadata for {count} new book(s)?"),
+            bgcolor=t["surface"],
+            title=ft.Text(
+                f"Weave in the details for {count} new book(s)?",
+                color=t["accent"], font_family="Cormorant", size=22,
+            ),
             content=ft.Column(
                 controls=[
                     ft.Text(
-                        "Look up covers, genres, and publisher info from "
-                        "Google Books and OpenLibrary."
+                        "Fill in whatever's missing using Google Books and OpenLibrary:",
+                        color=t["muted"], size=12, italic=True,
                     ),
+                    ft.Divider(color=t["line"], height=1),
                     cover_cb, desc_cb, genre_cb, pub_cb,
                 ],
                 tight=True,
                 width=340,
+                spacing=8,
             ),
             actions=[
-                ft.TextButton("Skip", on_click=skip),
-                ft.FilledButton("Fetch Metadata", on_click=start_fetch),
+                ft.TextButton(
+                    "Not Now", on_click=skip,
+                    style=ft.ButtonStyle(color=t["muted"]),
+                ),
+                ft.FilledButton(
+                    "✨ Weave It In", on_click=start_fetch,
+                    style=ft.ButtonStyle(bgcolor=t["accent"], color=t["page"]),
+                ),
             ],
         )
         page.open(dlg)
@@ -638,21 +651,35 @@ def main(page: ft.Page):
                             want_genre, want_pubinfo):
         """FIX: runs the concurrent (4-worker) fetch from google_books.py
         against the newly imported books, with a live progress dialog -
-        "Looked up X of Y book(s)..." - instead of either blocking the
-        UI or leaving the user with no sense of whether it's working."""
-        progress_text = ft.Text("Starting lookup…")
+        instead of either blocking the UI or leaving the user with no
+        sense of whether it's working. FIX: restyled to match the app's
+        theme and voice ("Weaving new threads...") instead of a plain
+        default "Fetching metadata" dialog with a bare progress bar."""
+        t = THEMES[state["theme"]]
+        progress_text = ft.Text("Casting a line to Google Books & OpenLibrary…",
+                                 color=t["muted"], size=12, italic=True)
+        progress_bar = ft.ProgressBar(color=t["accent"], bgcolor=t["surface2"], width=280)
         progress_dlg = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Fetching metadata"),
+            bgcolor=t["surface"],
+            title=ft.Row(
+                controls=[
+                    ft.Icon(ft.Icons.AUTO_AWESOME, color=t["accent"], size=20),
+                    ft.Text("Weaving new threads…", color=t["accent"],
+                            font_family="Cormorant", size=22),
+                ],
+                spacing=8,
+            ),
             content=ft.Column(
-                controls=[progress_text, ft.ProgressBar()],
-                tight=True, width=300,
+                controls=[progress_bar, progress_text],
+                tight=True, width=300, spacing=10,
             ),
         )
         page.open(progress_dlg)
         page.update()
 
         def on_progress(done, total):
+            progress_bar.value = done / total if total else None
             progress_text.value = f"Looked up {done} of {total} book(s)…"
             page.update()
 
@@ -669,7 +696,7 @@ def main(page: ft.Page):
             page.close(progress_dlg)
             refresh_all()
             page.open(ft.SnackBar(
-                ft.Text(f"Found metadata for {stats['found']} of {stats['total']} book(s).")
+                ft.Text(f"✨ Wove in details for {stats['found']} of {stats['total']} book(s).")
             ))
             page.update()
 
@@ -747,7 +774,10 @@ def main(page: ft.Page):
     def build_stats_row():
         """The old app's row of 6 accent-bordered stat tiles
         (Books/Authors/Series/Read/Unread/Favorites) - a signature
-        piece of its look that had no equivalent here at all."""
+        piece of its look that had no equivalent here at all.
+        FIX: these tiles previously had no on_click at all - tapping
+        "Read", "Series", etc. did nothing. They now jump straight to
+        the matching tab, same as the old app's stat tiles did."""
         t = THEMES[state["theme"]]
         books = library.all_books()
         total = len(books)
@@ -760,8 +790,16 @@ def main(page: ft.Page):
             (total, "Books"), (authors, "Authors"), (series_count, "Series"),
             (read_count, "Read"), (unread_count, "Unread"), (favorites, "Favorites"),
         ]
+        # FIX: maps each stat tile's label to the matching tab index in
+        # TAB_LABELS = ["Authors", "Series", "Books", "Read", "Unread", "Favorites"].
+        label_to_tab_index = {label: idx for idx, label in enumerate(TAB_LABELS)}
 
         def stat_tile(number, label):
+            def _on_click(e):
+                state["selected_tab"] = label_to_tab_index[label]
+                build_tab_row()
+                refresh_body()
+
             return ft.Container(
                 content=ft.Column(
                     [
@@ -779,6 +817,8 @@ def main(page: ft.Page):
                 padding=ft.padding.symmetric(horizontal=6, vertical=12),
                 alignment=ft.alignment.center,
                 width=106,
+                on_click=_on_click,  # FIX: was missing entirely
+                ink=True,            # FIX: gives a visible tap ripple, like the old app's tiles
             )
 
         stats_row.controls = [stat_tile(n, l) for n, l in pairs]
@@ -788,11 +828,15 @@ def main(page: ft.Page):
         """Centered title + italic tagline, colored from the active
         theme - previously plain default-colored text with no tagline
         at all, which is most of why the header didn't read as the
-        same app."""
+        same app. FIX: also colors the new ornamental divider under
+        the tagline so it tracks the active theme's accent color too."""
         t = THEMES[state["theme"]]
         header_title.value = "StoryStrand"
         header_title.color = t["accent"]
         header_tagline.color = t["muted"]
+        header_divider_left.bgcolor = t["accent"]
+        header_divider_right.bgcolor = t["accent"]
+        header_divider_icon.color = t["accent"]
         page.update()  # FIX: push this change immediately instead of relying on a later, unrelated update()
 
     def on_search_change(value):
@@ -867,12 +911,26 @@ def main(page: ft.Page):
     lazy_load_trigger_row = ft.Row(controls=[lazy_load_trigger, weave_button], wrap=True)
 
     header_title = ft.Text(
-        "StoryStrand", size=36, weight=ft.FontWeight.BOLD,
+        "StoryStrand", size=40, weight=ft.FontWeight.BOLD,
         font_family="Cormorant", text_align=ft.TextAlign.CENTER,
+        style=ft.TextStyle(letter_spacing=2),  # FIX: a touch of letter-spacing reads less "default app title"
     )
+    # FIX: corrected tagline wording per request.
     header_tagline = ft.Text(
-        "a library that grows one story at a time", italic=True,
+        "Where every story finds its thread", italic=True,
         size=13, font_family="Baskerville", text_align=ft.TextAlign.CENTER,
+    )
+    # FIX: "prettier" -> "romantic": swapped the plain book-icon divider
+    # for a small heart-flourish glyph (a classic vintage-romance motif),
+    # and gave the whole title block a soft drop shadow for a bit of
+    # dimension instead of sitting flat on the background.
+    header_divider_left = ft.Container(width=44, height=1)
+    header_divider_right = ft.Container(width=44, height=1)
+    header_divider_icon = ft.Text("❦", size=16, font_family="Cormorant")
+    header_divider = ft.Row(
+        controls=[header_divider_left, header_divider_icon, header_divider_right],
+        alignment=ft.MainAxisAlignment.CENTER,
+        spacing=10,
     )
     stats_row = ft.Row(spacing=8, wrap=True, run_spacing=8)
 
@@ -881,9 +939,19 @@ def main(page: ft.Page):
         content=ft.Column(
             spacing=10,
             controls=[
-                ft.Column(
-                    controls=[header_title, header_tagline],
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                # FIX: soft shadow behind the title block for a touch of
+                # romantic depth, instead of flat text on a flat background.
+                ft.Container(
+                    shadow=ft.BoxShadow(
+                        blur_radius=24, spread_radius=1,
+                        color=ft.Colors.with_opacity(0.25, ft.Colors.BLACK),
+                        offset=ft.Offset(0, 4),
+                    ),
+                    content=ft.Column(
+                        controls=[header_title, header_tagline, header_divider],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=6,
+                    ),
                 ),
                 ft.Row(controls=[ft.Container(expand=True), theme_dropdown]),
                 stats_row,
