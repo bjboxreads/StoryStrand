@@ -24,7 +24,7 @@ import requests
 import flet as ft
 from typing import Callable, List, Optional
 
-from models import Book, Library
+from models import Book, Library, normalize_title_key
 
 GOOGLE_BOOKS_ENDPOINT = "https://www.googleapis.com/books/v1/volumes"
 
@@ -95,6 +95,60 @@ def apply_metadata(book: Book, meta: dict) -> None:
 
 
 # ---------------- series discovery ("Weave My Strand") ----------------
+#
+# Two independent, imperfect sources are combined here rather than
+# relying on Google Books alone: neither has a real "series" field, so
+# each is queried by series name (+ author) and the results are pooled,
+# deduped, and filtered together. A volume only needs to turn up in
+# ONE of the two to be surfaced - this trades a bit more noise (caught
+# by the filters below) for a lot fewer missed hits, since a given
+# series is often better indexed in one source than the other.
+
+OPENLIBRARY_SEARCH_ENDPOINT = "https://openlibrary.org/search.json"
+# OpenLibrary throttles/blocks requests with no User-Agent much more
+# aggressively than ones that identify the app.
+OPENLIBRARY_HEADERS = {"User-Agent": "StoryStrand/1.0 (personal book library app; contact: n/a)"}
+
+STOPWORDS = {"the", "a", "an", "of", "and", "&"}
+
+
+def _normalize_words(text: str) -> List[str]:
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return [w for w in words if w not in STOPWORDS]
+
+
+def _series_words_present(series_name: str, haystack: str) -> bool:
+    """True only if every significant word of the series name shows up
+    somewhere in the candidate title/subtitle - catches "Stormlight
+    Archive, Book Four" for a series named "The Stormlight Archive"
+    (a plain substring check would miss it), while still rejecting
+    results that don't reference the series at all."""
+    series_words = set(_normalize_words(series_name))
+    if not series_words:
+        return False
+    return series_words.issubset(set(_normalize_words(haystack)))
+
+
+def _author_matches(wanted_author: str, candidate_authors: List[str]) -> bool:
+    """Rejects results that share the series name in their title but
+    are by a different author entirely - the single biggest source of
+    false positives when a series name is generic or reused. If we
+    don't actually know the series' author, nothing to check against."""
+    wanted_words = _normalize_words(wanted_author)
+    if not wanted_words or (wanted_author or "").strip().lower() == "unknown author":
+        return True
+    wanted_norm = " ".join(wanted_words)
+    wanted_last = wanted_words[-1]
+    for cand in candidate_authors or []:
+        cand_norm = " ".join(_normalize_words(cand))
+        if not cand_norm:
+            continue
+        if cand_norm in wanted_norm or wanted_norm in cand_norm:
+            return True
+        if wanted_last in cand_norm.split():
+            return True
+    return False
+
 
 def _guess_series_index(title: str) -> Optional[float]:
     match = SERIES_INDEX_PATTERN.search(title)
@@ -107,21 +161,14 @@ def _guess_series_index(title: str) -> Optional[float]:
         return None
 
 
-def find_missing_series_volumes(series_name: str, owned_titles: List[str], author: str = "") -> List[dict]:
-    """Best-effort discovery: search Google Books for a series name and
-    return any volumes that don't match a title already in owned_titles.
-
-    Google Books has no first-class "series" field, so this searches by
-    series name (+ author, when known) and keeps only results that
-    actually mention the series name somewhere in the title/subtitle -
-    Google's search is loose enough to otherwise return unrelated hits.
-    Results already on the shelf (matched case-insensitively) are
-    dropped, and whatever's left is sorted by a best-guess series index.
-    """
+def _search_google_books_raw(series_name: str, author: str = "", max_results: int = 40) -> List[dict]:
+    """Common-shape candidates {title, subtitle, authors, cover_url}
+    from Google Books. Returns [] on any network failure rather than
+    raising, so one source failing doesn't block the other."""
     query_parts = [f'"{series_name}"']
     if author and author != "Unknown Author":
         query_parts.append(f'inauthor:{author}')
-    params = {"q": " ".join(query_parts), "maxResults": 40}
+    params = {"q": " ".join(query_parts), "maxResults": max_results}
 
     try:
         resp = requests.get(GOOGLE_BOOKS_ENDPOINT, params=params, timeout=10)
@@ -130,32 +177,92 @@ def find_missing_series_volumes(series_name: str, owned_titles: List[str], autho
     except (requests.RequestException, ValueError):
         return []
 
-    owned_lower = {t.strip().lower() for t in owned_titles}
-    series_lower = series_name.strip().lower()
-    seen_titles = set()
-    missing = []
-
+    results = []
     for item in data.get("items", []):
         info = item.get("volumeInfo", {})
         title = (info.get("title") or "").strip()
         if not title:
             continue
-        title_key = title.lower()
-        if title_key in owned_lower or title_key in seen_titles:
+        image_links = info.get("imageLinks", {})
+        results.append({
+            "title": title,
+            "subtitle": info.get("subtitle") or "",
+            "authors": info.get("authors", []) or [],
+            "cover_url": image_links.get("thumbnail") or image_links.get("smallThumbnail") or "",
+        })
+    return results
+
+
+def _search_openlibrary_raw(series_name: str, author: str = "", max_results: int = 40) -> List[dict]:
+    """Same common shape as _search_google_books_raw, sourced from
+    OpenLibrary's search API instead - a genuinely separate index, so
+    it turns up different gaps than Google Books does."""
+    params = {
+        "q": series_name,
+        "fields": "title,subtitle,author_name,cover_i",
+        "limit": max_results,
+    }
+    if author and author != "Unknown Author":
+        params["author"] = author
+
+    try:
+        resp = requests.get(
+            OPENLIBRARY_SEARCH_ENDPOINT, params=params, timeout=10, headers=OPENLIBRARY_HEADERS
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError):
+        return []
+
+    results = []
+    for doc in data.get("docs", []):
+        title = (doc.get("title") or "").strip()
+        if not title:
+            continue
+        cover_id = doc.get("cover_i")
+        results.append({
+            "title": title,
+            "subtitle": doc.get("subtitle") or "",
+            "authors": doc.get("author_name", []) or [],
+            "cover_url": f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg" if cover_id else "",
+        })
+    return results
+
+
+def find_missing_series_volumes(series_name: str, owned_titles: List[str], author: str = "") -> List[dict]:
+    """Best-effort discovery: pool results from Google Books AND
+    OpenLibrary for a series name, then keep only volumes that (a)
+    aren't already owned, (b) actually reference every significant
+    word of the series name, and (c) are credited to a matching
+    author when we know one. A volume from either source can pass;
+    duplicates (including different editions of the same book) are
+    collapsed via normalize_title_key before the result is returned.
+    """
+    candidates = _search_google_books_raw(series_name, author) + _search_openlibrary_raw(series_name, author)
+
+    owned_keys = {normalize_title_key(t) for t in owned_titles}
+    seen_keys = set()
+    missing = []
+
+    for cand in candidates:
+        title = cand["title"]
+        key = normalize_title_key(title)
+        if key in owned_keys or key in seen_keys:
             continue
 
-        subtitle = (info.get("subtitle") or "").lower()
-        if series_lower not in title_key and series_lower not in subtitle:
-            continue  # doesn't actually look like part of this series
+        haystack = f"{title} {cand.get('subtitle', '')}"
+        if not _series_words_present(series_name, haystack):
+            continue
+        if not _author_matches(author, cand.get("authors", [])):
+            continue
 
-        seen_titles.add(title_key)
-        image_links = info.get("imageLinks", {})
+        seen_keys.add(key)
         missing.append({
             "title": title,
-            "author": ", ".join(info.get("authors", [])) or author or "Unknown Author",
+            "author": ", ".join(cand.get("authors", [])) or author or "Unknown Author",
             "series": series_name,
             "series_index": _guess_series_index(title),
-            "cover_url": image_links.get("thumbnail") or image_links.get("smallThumbnail") or "",
+            "cover_url": cand.get("cover_url", ""),
         })
 
     missing.sort(key=lambda m: (m["series_index"] is None, m["series_index"] or 0, m["title"].lower()))
@@ -169,7 +276,8 @@ def build_series_discovery_trigger(
 ) -> ft.ElevatedButton:
     """Returns a "Weave My Strand" button. On click, checks every series
     in the library for volumes that don't appear to be on the shelf yet
-    and calls on_results(missing_by_series) once done, where
+    (skipping anything the user has already dismissed as a false
+    positive) and calls on_results(missing_by_series) once done, where
     missing_by_series maps series name -> list of dicts from
     find_missing_series_volumes (only series with at least one hit are
     included)."""
@@ -187,6 +295,7 @@ def build_series_discovery_trigger(
             found = find_missing_series_volumes(
                 name, owned_by_series.get(name, []), author_by_series.get(name, "")
             )
+            found = [v for v in found if not library.is_missing_dismissed(name, v["title"])]
             if found:
                 missing_by_series[name] = found
 
@@ -209,10 +318,17 @@ def build_series_discovery_trigger(
     )
 
 
-def render_missing_volume_ghost(volume: dict, on_add: Callable[[dict], None]) -> ft.Container:
+def render_missing_volume_ghost(
+    volume: dict,
+    on_add: Callable[[dict], None],
+    on_dismiss: Optional[Callable[[dict], None]] = None,
+) -> ft.Container:
     """A dim, 0.6-opacity ghost card for a volume that looks like it
     belongs to a series the user owns, but isn't in the library yet.
-    Tapping "Add to Shelf" hands the volume dict back via on_add."""
+    Tapping "Add to Shelf" hands the volume dict back via on_add.
+    Since no free series-metadata source is perfect, "Not in this
+    series" lets the user permanently dismiss a false positive instead
+    of it resurfacing every time Weave My Strand runs again."""
     idx_label = f" #{volume['series_index']:g}" if volume.get("series_index") else ""
 
     if volume.get("cover_url"):
@@ -225,6 +341,12 @@ def render_missing_volume_ghost(volume: dict, on_add: Callable[[dict], None]) ->
         cover = ft.Container(
             width=40, height=60, border_radius=4,
             bgcolor=ft.Colors.with_opacity(0.15, ft.Colors.WHITE),
+        )
+
+    action_buttons = [ft.TextButton("Add to Shelf", on_click=lambda e: on_add(volume))]
+    if on_dismiss:
+        action_buttons.append(
+            ft.TextButton("Not in this series", on_click=lambda e: on_dismiss(volume))
         )
 
     return ft.Container(
@@ -243,7 +365,7 @@ def render_missing_volume_ghost(volume: dict, on_add: Callable[[dict], None]) ->
                         ft.Text("Not in your library yet", size=11, italic=True),
                     ],
                 ),
-                ft.TextButton("Add to Shelf", on_click=lambda e: on_add(volume)),
+                ft.Column(controls=action_buttons, spacing=0),
             ],
         ),
     )
