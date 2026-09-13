@@ -1,7 +1,7 @@
 """
 StoryStrand - google_books.py
 
-Metadata lookups against Google Books AND OpenLibrary, plus two features:
+Metadata lookups against Google Books AND OpenLibrary, plus three features:
 
   1. The lazy-loading pattern: a trigger button that searches for any
      book missing metadata/cover art, rendering 0.6-opacity ghost
@@ -14,8 +14,16 @@ Metadata lookups against Google Books AND OpenLibrary, plus two features:
      and surfaces any volumes that don't appear to be on the shelf yet,
      as ghost cards the user can add with one click.
 
-Both are self-contained here - nothing in this file rewrites the rest
-of main.py, it only returns ready-to-place ft.Control objects.
+  3. FIX: fetch_missing_metadata_parallel() - fetches metadata for a
+     batch of books concurrently (up to 4 at a time) instead of one at
+     a time, the same pattern the old app used (data.py's
+     fetch_missing_metadata_parallel). Used by main.py right after an
+     import finishes, so a big import doesn't sit there fetching
+     metadata sequentially for minutes.
+
+Both/all are self-contained here - nothing in this file rewrites the
+rest of main.py, it only returns ready-to-place ft.Control objects or
+plain data.
 """
 
 from __future__ import annotations
@@ -24,6 +32,7 @@ import difflib
 import threading
 import requests
 import flet as ft
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable, List, Optional
 
 from models import Book, Library, normalize_title_key
@@ -206,24 +215,108 @@ def search_book_metadata(title: str, author: str = "") -> Optional[dict]:
     return _merge_metadata(google_result, openlibrary_result)
 
 
-def apply_metadata(book: Book, meta: dict) -> None:
+def apply_metadata(book: Book, meta: dict) -> bool:
     """Fill in only the fields the book is missing; never clobber
-    something the user already entered manually."""
+    something the user already entered manually. Returns True if any
+    field actually changed, so callers can report a real "found" count
+    instead of just "we ran a lookup"."""
+    changed = False
     if not book.description and meta.get("description"):
         book.description = meta["description"]
+        changed = True
     if not book.page_count and meta.get("page_count"):
         book.page_count = meta["page_count"]
+        changed = True
     if not book.cover_url and meta.get("cover_url"):
         book.cover_url = meta["cover_url"]
+        changed = True
     if not book.genre and meta.get("categories"):
         book.genre = meta["categories"]
+        changed = True
     if not book.published and meta.get("published"):
         book.published = meta["published"]
+        changed = True
     if not book.publisher and meta.get("publisher"):
         book.publisher = meta["publisher"]
+        changed = True
     if not book.isbn and meta.get("isbn"):
         book.isbn = meta["isbn"]
+        changed = True
     book.metadata_fetched = True
+    return changed
+
+
+# ---------------- FIX: parallel batch metadata fetch ----------------
+
+def fetch_missing_metadata_parallel(
+    books: List[Book],
+    want_cover: bool = True,
+    want_description: bool = True,
+    want_genre: bool = True,
+    want_pubinfo: bool = True,
+    on_progress: Optional[Callable[[int, int], None]] = None,
+    max_workers: int = 4,
+) -> dict:
+    """FIX: fetches metadata for a list of books CONCURRENTLY (up to
+    max_workers lookups in flight at once) instead of one at a time.
+    This is the same pattern the old app used (data.py's
+    fetch_missing_metadata_parallel) -- 4 workers is deliberately
+    conservative, since OpenLibrary in particular starts throttling or
+    dropping requests well before 8 concurrent connections.
+
+    Mutates each Book in place via apply_metadata(). Does NOT call
+    library.save() -- the caller decides when to persist, since this
+    may run against books that aren't part of a Library yet.
+
+    want_cover / want_description / want_genre / want_pubinfo mirror
+    the old app's Import-tab checkboxes: set any of them False to skip
+    filling that field even if a source has it.
+
+    Returns {"found": N, "total": N} where "found" counts books that
+    got at least one new field filled in.
+    """
+    total = len(books)
+    if total == 0:
+        return {"found": 0, "total": 0}
+
+    found = 0
+    done = 0
+    workers = min(max_workers, max(1, total))
+
+    def _filtered_meta(meta: Optional[dict]) -> Optional[dict]:
+        if not meta:
+            return None
+        meta = dict(meta)
+        if not want_cover:
+            meta["cover_url"] = ""
+        if not want_description:
+            meta["description"] = ""
+        if not want_genre:
+            meta["categories"] = ""
+        if not want_pubinfo:
+            meta["publisher"] = ""
+            meta["published"] = ""
+            meta["page_count"] = None
+        return meta
+
+    def work(book: Book):
+        meta = search_book_metadata(book.title, book.author)
+        return book, _filtered_meta(meta)
+
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [executor.submit(work, b) for b in books]
+        for future in as_completed(futures):
+            book, meta = future.result()
+            got = False
+            if meta:
+                got = apply_metadata(book, meta)
+            if got:
+                found += 1
+            done += 1
+            if on_progress:
+                on_progress(done, total)
+
+    return {"found": found, "total": total}
 
 
 # ---------------- series discovery ("Weave My Strand") ----------------
