@@ -48,7 +48,6 @@ def main(page: ft.Page):
                 secondary=t["secondary"],
                 surface=t["surface"],
                 on_surface=t["text"],
-                background=t["background"],
             ),
             font_family="Vintage-Body",
         )
