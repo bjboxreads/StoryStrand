@@ -43,6 +43,18 @@ colored left-edge stripes) that made the old design read as distinct.
    with a small "└─" elbow. Still collapsible by default so this stays
    usable at 672+ authors instead of trying to lay everything out at
    once like a fixed genealogy chart would.
+5. FIX (performance): build_tree() previously called render_book_card()
+   for every book in every branch, for every author, immediately on
+   every call - once at startup and again on every tab switch, search
+   keystroke, and theme change. Setting the resulting column's
+   visible=False hid it but did NOT avoid building it, so the app was
+   still constructing 672+ full widget trees (image + 4 icon buttons +
+   text) synchronously on the UI thread every time, which is what made
+   the app feel "slow and glitchy" and made search/other tabs appear to
+   hang - they were just queued behind that rebuild, not broken. Book
+   cards for a branch are now only built the first time that branch is
+   expanded (and cached on the column after that), so build_tree()
+   itself only ever constructs cheap header/node widgets up front.
 """
 
 import threading
@@ -229,6 +241,16 @@ def main(page: ft.Page):
         below, and as the original working version of this app used)
         doesn't have that problem, so the indent + left border here
         stands in for the elbow/trunk-line visual instead.
+
+        FIX (performance): book cards for a branch are now only built
+        the first time that branch is expanded, not upfront for every
+        branch of every author on every call to build_tree(). Each
+        branch's book_column starts empty; the toggle handler fills it
+        in (and caches the built controls) the first time it's opened.
+        This is what actually fixes the "slow and glitchy" tab/search
+        lag - previously render_book_card() ran for all 672+ books on
+        every single build_tree() call, whether or not any branch was
+        even expanded to show them.
         """
         t = THEMES[state["theme"]]
         tree_data = library.tree()
@@ -252,15 +274,27 @@ def main(page: ft.Page):
                     # colliding at the front with #1.
                     books = sorted(books, key=lambda b: (b.series_index is None, b.series_index or 0))
 
+                # FIX (performance): start empty instead of
+                # [render_book_card(b) for b in books] - building all
+                # those cards eagerly here is what caused the lag, since
+                # this happens for every branch, every author, on every
+                # build_tree() call regardless of whether the branch is
+                # even expanded.
                 book_column = ft.Column(
-                    controls=[render_book_card(b) for b in books],
+                    controls=[],
                     spacing=6,
                     visible=False,
                 )
 
-                def make_toggle(col=book_column):
+                def make_toggle(col=book_column, branch_books=books):
                     def _toggle(e):
                         col.visible = not col.visible
+                        # FIX (performance): build (and cache) the cards
+                        # only the first time this branch is opened.
+                        # Later toggles just flip visibility on the
+                        # already-built controls - no rebuild cost.
+                        if col.visible and not col.controls:
+                            col.controls = [render_book_card(b) for b in branch_books]
                         e.control.icon = ft.Icons.EXPAND_LESS if col.visible else ft.Icons.EXPAND_MORE
                         page.update()
                     return _toggle
