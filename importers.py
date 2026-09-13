@@ -1,6 +1,6 @@
 """
 StoryStrand - importers.py
-Turns uploaded CSV / TXT / DOCX / PDF / Word files into Book objects.
+Turns uploaded CSV / TXT / DOCX / PDF / DOC files into Book objects.
 
 CSV is the most reliable path (expects columns like title/author/series);
 the other formats are parsed heuristically, one book guess per line, in
@@ -37,9 +37,7 @@ def import_file(path: str) -> List[Book]:
     if ext == ".pdf":
         return _import_lines(_read_pdf_lines(path))
     if ext == ".doc":
-        # legacy .doc has no clean pure-python reader; ask caller to
-        # convert to .docx, but still attempt a plain-text fallback read
-        return _import_lines(_read_txt_lines(path))
+        return _import_lines(_read_doc_lines(path))
     raise ValueError(f"Unsupported file type: {ext}")
 
 
@@ -109,7 +107,7 @@ def _import_csv(path: str) -> List[Book]:
     return books
 
 
-# ---------------- plain line parsing (TXT / DOCX / PDF) ----------------
+# ---------------- plain line parsing (TXT / DOCX / PDF / DOC) ----------------
 
 def _import_lines(lines: List[str]) -> List[Book]:
     books = []
@@ -171,4 +169,45 @@ def _read_pdf_lines(path: str) -> List[str]:
     for page in reader.pages:
         text = page.extract_text() or ""
         lines.extend(text.splitlines())
+    return lines
+
+
+_DOC_WORD_RE = re.compile(r"[A-Za-z]{3,}")
+
+
+def _read_doc_lines(path: str) -> List[str]:
+    """Legacy .doc (Word 97-2003) is a binary OLE-compound-file format,
+    not text -- there's no reliable pure-Python parser for it the way
+    python-docx handles the newer, zip-based .docx. Previously this
+    just re-read the raw bytes as if they were a text file, which
+    silently produced garbage instead of book titles.
+
+    This instead pulls out printable text heuristically: Word stores
+    most user-entered text as UTF-16LE, so decoding as UTF-16LE and
+    keeping only runs that look like actual words (letters, reasonable
+    length) recovers plain, unformatted book lists reasonably well.
+    Tables, headers/footers, and other structured content will not
+    come through cleanly -- if this returns nothing usable, the caller
+    is told to convert the file to .docx instead, which python-docx
+    parses properly.
+    """
+    with open(path, "rb") as f:
+        raw = f.read()
+
+    lines: List[str] = []
+
+    utf16_text = raw.decode("utf-16-le", errors="ignore")
+    for chunk in re.split(r"[\r\n\x00]+", utf16_text):
+        chunk = chunk.strip()
+        if len(chunk) >= 4 and _DOC_WORD_RE.search(chunk):
+            lines.append(chunk)
+
+    if not lines:
+        # Fallback: some .doc files keep runs of plain ASCII/Latin-1
+        # text alongside (or instead of) UTF-16LE runs.
+        latin1_text = raw.decode("latin-1", errors="ignore")
+        for chunk in re.findall(r"[ -~]{4,}", latin1_text):
+            if _DOC_WORD_RE.search(chunk):
+                lines.append(chunk.strip())
+
     return lines
