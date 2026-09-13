@@ -16,8 +16,9 @@ from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict, Set, Tuple
 
 
-DATA_FILE = os.path.join(os.path.dirname(__file__), "library.json")
-DISMISSED_FILE = os.path.join(os.path.dirname(__file__), "dismissed_missing.json")
+APP_DATA_DIR = os.getenv("FLET_APP_STORAGE_DATA", os.path.dirname(__file__))
+DATA_FILE = os.path.join(APP_DATA_DIR, "library.json")
+DISMISSED_FILE = os.path.join(APP_DATA_DIR, "dismissed_missing.json")
 
 
 def normalize_title_key(title: str) -> str:
@@ -110,94 +111,4 @@ class Library:
         return (series.strip().lower(), normalize_title_key(title)) in self.dismissed
 
     def dismiss_missing_volume(self, series: str, title: str) -> None:
-        """Weave My Strand won't surface this (series, title) again -
-        used for the "Not in this series" button on a discovery ghost
-        card that turned out to be a false positive."""
-        self.dismissed.add((series.strip().lower(), normalize_title_key(title)))
-        self._save_dismissed()
-
-    # ---------- CRUD ----------
-
-    def add_book(self, book: Book, persist: bool = True) -> Book:
-        self.books[book.id] = book
-        if persist:
-            self.save()
-        return book
-
-    def update_book(self, book_id: str, **changes) -> Optional[Book]:
-        book = self.books.get(book_id)
-        if not book:
-            return None
-        for k, v in changes.items():
-            if hasattr(book, k):
-                setattr(book, k, v)
-        self.save()
-        return book
-
-    def remove_book(self, book_id: str) -> None:
-        self.books.pop(book_id, None)
-        self.save()
-
-    # ---------- queries used by the UI ----------
-
-    def all_books(self) -> List[Book]:
-        return list(self.books.values())
-
-    def authors(self) -> List[str]:
-        return sorted({b.author for b in self.books.values()}, key=str.lower)
-
-    def series_names(self) -> List[str]:
-        return sorted({b.series for b in self.books.values() if b.series}, key=str.lower)
-
-    def favorites(self) -> List[Book]:
-        return [b for b in self.books.values() if b.favorite]
-
-    def read_books(self) -> List[Book]:
-        return [b for b in self.books.values() if b.read]
-
-    def unread_books(self) -> List[Book]:
-        return [b for b in self.books.values() if not b.read]
-
-    def search(self, query: str) -> List[Book]:
-        q = query.strip().lower()
-        if not q:
-            return self.all_books()
-        out = []
-        for b in self.books.values():
-            haystack = " ".join(
-                [b.title, b.author, b.series or "", b.genre, b.isbn, b.publisher]
-            ).lower()
-            if q in haystack:
-                out.append(b)
-        return out
-
-    def books_missing_metadata(self) -> List[Book]:
-        """Books that have never had a Google Books lookup, or are missing
-        a cover/page count - candidates for the lazy-load pass."""
-        return [
-            b for b in self.books.values()
-            if not b.metadata_fetched or not b.cover_url or not b.page_count
-        ]
-
-    def tree(self) -> Dict[str, Dict[str, List[Book]]]:
-        """
-        Build the author -> branch -> [books] structure used by the tree view.
-        Branch key is the series name for series books, or the book's own
-        title (prefixed) for standalone books, so each standalone book gets
-        its own branch as requested.
-        """
-        result: Dict[str, Dict[str, List[Book]]] = {}
-        for b in sorted(self.books.values(), key=lambda x: (x.author.lower(), x.title.lower())):
-            author_bucket = result.setdefault(b.author, {})
-            if b.series:
-                branch_key = f"series::{b.series}"
-            else:
-                branch_key = f"standalone::{b.id}"
-            author_bucket.setdefault(branch_key, []).append(b)
-
-        # sort books within a series branch by series_index when available
-        for author_bucket in result.values():
-            for branch_key, books in author_bucket.items():
-                if branch_key.startswith("series::"):
-                    books.sort(key=lambda x: (x.series_index is None, x.series_index or 0, x.title.lower()))
-        return result
+        """Weave My
