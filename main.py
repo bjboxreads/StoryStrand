@@ -55,6 +55,21 @@ colored left-edge stripes) that made the old design read as distinct.
    cards for a branch are now only built the first time that branch is
    expanded (and cached on the column after that), so build_tree()
    itself only ever constructs cheap header/node widgets up front.
+6. FIX (performance): build_flat_list() (Books/Read/Unread/Favorites)
+   and build_series_view() (Series tab) previously rendered a full
+   render_book_card() for every matching book, all at once, on every
+   tab switch and every search keystroke - the same eager-build
+   problem #5 fixed for Authors, just not fixed for these other tabs
+   yet. Both now render in batches of PAGE_SIZE with a "Load more"
+   button, so opening Books with 672 titles (or typing in search)
+   only ever builds a first page of cards instead of all of them.
+7. FIX (discoverability): "Find Missing Book Info" and "Weave My
+   Strand" were appended to the END of the scrollable tab content,
+   after every book card on that tab - on a tab with hundreds of
+   books, that put them below a very long (and, pre-fix #6, very
+   laggy) scroll, which read as "the button is gone." They're now
+   part of the fixed header, next to Import/Add, so they're visible
+   on every tab without scrolling.
 """
 
 import threading
@@ -82,6 +97,9 @@ def small_pill_radius():
     return ft.border_radius.only(top_left=12, top_right=5, bottom_left=12, bottom_right=5)
 
 
+PAGE_SIZE = 60  # FIX: how many book cards to build per "page" in flat/series views
+
+
 def status_stripe_key(book: Book) -> str:
     """Returns a THEME key ('accent'/'accent2'/'muted') - caller
     resolves it against the active palette. This app's Book model
@@ -103,6 +121,7 @@ def main(page: ft.Page):
         "theme": DEFAULT_THEME,
         "search_query": "",
         "missing_by_series": {},  # series name -> [volume dicts] from Weave My Strand
+        "visible_count": PAGE_SIZE,  # FIX: how many cards build_flat_list/build_series_view render before "Load more"
     }
 
     # ---------------- theming ----------------
@@ -388,13 +407,36 @@ def main(page: ft.Page):
         return ft.Column(controls=author_controls, spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
 
     def build_flat_list(books) -> ft.Control:
+        """FIX (performance): only builds the first state['visible_count']
+        cards instead of a render_book_card() for every book in the list
+        up front - on Books/Read/Unread/Favorites that used to mean
+        building all 672(ish) cards on every tab switch or search
+        keystroke. A "Load more" button bumps visible_count and asks for
+        another refresh_body() rather than eagerly building the rest."""
         if not books:
             t = THEMES[state["theme"]]
             return ft.Container(padding=30, content=ft.Text("Nothing here yet.", italic=True, color=t["muted"]))
-        return ft.Column(
-            controls=[render_book_card(b) for b in books],
-            spacing=8, scroll=ft.ScrollMode.AUTO, expand=True,
-        )
+
+        t = THEMES[state["theme"]]
+        visible_count = min(state["visible_count"], len(books))
+        controls = [render_book_card(b) for b in books[:visible_count]]
+
+        remaining = len(books) - visible_count
+        if remaining > 0:
+            def _load_more(e):
+                state["visible_count"] += PAGE_SIZE
+                refresh_body()
+
+            controls.append(
+                ft.OutlinedButton(
+                    f"Load more ({remaining} remaining)",
+                    icon=ft.Icons.EXPAND_MORE,
+                    on_click=_load_more,
+                    style=ft.ButtonStyle(color=t["accent"]),
+                )
+            )
+
+        return ft.Column(controls=controls, spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
 
     def build_books_view() -> ft.Control:
         """Books tab: every book, flat, alphabetical by title."""
@@ -434,6 +476,12 @@ def main(page: ft.Page):
         refresh_all()
 
     def build_series_view() -> ft.Control:
+        """FIX (performance): renders series blocks (and the book cards
+        inside them) only until state['visible_count'] total books have
+        been rendered, then stops and offers "Load more series" instead
+        of building every book in every series up front - previously
+        this built a render_book_card() for every owned book in every
+        series, all at once, on every tab switch and search keystroke."""
         t = THEMES[state["theme"]]
         by_series = {}
         for b in library.all_books():
@@ -451,9 +499,16 @@ def main(page: ft.Page):
             return ft.Container(padding=30, content=ft.Text("No series tracked yet.", italic=True, color=t["muted"]))
 
         blocks = []
+        rendered_books = 0
+        remaining_series_count = 0
         for series_name, books in sorted(by_series.items(), key=lambda kv: kv[0].lower()):
+            if rendered_books >= state["visible_count"]:
+                remaining_series_count += 1
+                continue
+
             books.sort(key=lambda x: (x.series_index is None, x.series_index or 0))
             owned_cards = [render_book_card(b) for b in books]
+            rendered_books += len(books)
             ghost_cards = [
                 render_missing_volume_ghost(v, on_add=add_missing_volume, on_dismiss=dismiss_missing_volume)
                 for v in state["missing_by_series"].get(series_name, [])
@@ -468,6 +523,21 @@ def main(page: ft.Page):
                     ]),
                 )
             )
+
+        if remaining_series_count > 0:
+            def _load_more(e):
+                state["visible_count"] += PAGE_SIZE
+                refresh_body()
+
+            blocks.append(
+                ft.OutlinedButton(
+                    f"Load more series ({remaining_series_count} remaining)",
+                    icon=ft.Icons.EXPAND_MORE,
+                    on_click=_load_more,
+                    style=ft.ButtonStyle(color=t["accent"]),
+                )
+            )
+
         return ft.Column(controls=blocks, spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
 
     # ---------------- add / edit dialog ----------------
@@ -785,6 +855,7 @@ def main(page: ft.Page):
                 def _click(e):
                     try:
                         state["selected_tab"] = idx
+                        state["visible_count"] = PAGE_SIZE  # FIX: reset pagination on tab change
                         build_tab_row()
                         refresh_body()
                     except Exception as ex:
@@ -838,6 +909,7 @@ def main(page: ft.Page):
             def _on_click(e):
                 try:
                     state["selected_tab"] = label_to_tab_index[label]
+                    state["visible_count"] = PAGE_SIZE  # FIX: reset pagination on tab change
                     build_tab_row()
                     refresh_body()
                 except Exception as ex:
@@ -888,6 +960,7 @@ def main(page: ft.Page):
     def on_search_change(value):
         try:
             state["search_query"] = value
+            state["visible_count"] = PAGE_SIZE  # FIX: reset pagination whenever the query changes
             refresh_body()
         except Exception as ex:
             import traceback
@@ -930,10 +1003,13 @@ def main(page: ft.Page):
                 else:
                     content = build_flat_list(library.favorites())
 
-            body_holder.content = ft.Column(
-                controls=[content, ft.Divider(), lazy_load_trigger_row, lazy_load_column],
-                expand=True, scroll=ft.ScrollMode.AUTO,
-            )
+            # FIX (discoverability): lazy_load_trigger_row (Find Missing
+            # Book Info / Weave My Strand) and lazy_load_column used to be
+            # appended here, after every book card on the tab - buried
+            # below hundreds of cards. They now live in the fixed header
+            # instead, so body_holder only ever holds the active tab's
+            # own content.
+            body_holder.content = content
             page.update()
         except Exception as ex:
             import traceback
@@ -1021,6 +1097,12 @@ def main(page: ft.Page):
                     ],
                 ),
                 tab_row,
+                # FIX (discoverability): these used to be appended at the
+                # bottom of the scrollable tab content, below every book
+                # card. Moved into the fixed header so they're visible on
+                # every tab without scrolling past hundreds of cards.
+                lazy_load_trigger_row,
+                lazy_load_column,
             ],
         ),
     )
