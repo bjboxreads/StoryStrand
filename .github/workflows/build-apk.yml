@@ -17,24 +17,6 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Set up Flutter
-        uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.24.0'
-          channel: 'stable'
-
-      - name: Accept Android licenses
-        run: yes | flutter doctor --android-licenses || true
-
       - name: Install Flet
         run: pip install "flet[all]"
 
@@ -42,7 +24,7 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Build APK
-        run: flet build apk --project "StoryStrand" --org com.storystrand.app
+        run: yes | flet build apk --project "StoryStrand" --org com.storystrand.app
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
