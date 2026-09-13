@@ -575,6 +575,55 @@ def main(page: ft.Page):
             )
         tab_row.controls = buttons
 
+    def build_stats_row():
+        """The old app's row of 6 accent-bordered stat tiles
+        (Books/Authors/Series/Read/Unread/Favorites) - a signature
+        piece of its look that had no equivalent here at all."""
+        t = THEMES[state["theme"]]
+        books = library.all_books()
+        total = len(books)
+        authors = len({b.author for b in books}) if total else 0
+        series_count = len({b.series for b in books if b.series}) if total else 0
+        read_count = sum(1 for b in books if b.read)
+        unread_count = sum(1 for b in books if not b.read)
+        favorites = sum(1 for b in books if b.favorite)
+        pairs = [
+            (total, "Books"), (authors, "Authors"), (series_count, "Series"),
+            (read_count, "Read"), (unread_count, "Unread"), (favorites, "Favorites"),
+        ]
+
+        def stat_tile(number, label):
+            return ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text(str(number), size=24, weight=ft.FontWeight.BOLD,
+                                 color=t["accent"], font_family="Cormorant"),
+                        ft.Text(label, size=11, color=t["text"], font_family="Baskerville",
+                                 no_wrap=True, text_align=ft.TextAlign.CENTER),
+                    ],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    spacing=2,
+                ),
+                bgcolor=t["card"],
+                border=ft.border.all(1, t["accent"]),
+                border_radius=small_pill_radius(),
+                padding=ft.padding.symmetric(horizontal=6, vertical=12),
+                alignment=ft.alignment.center,
+                width=106,
+            )
+
+        stats_row.controls = [stat_tile(n, l) for n, l in pairs]
+
+    def build_header_text():
+        """Centered title + italic tagline, colored from the active
+        theme - previously plain default-colored text with no tagline
+        at all, which is most of why the header didn't read as the
+        same app."""
+        t = THEMES[state["theme"]]
+        header_title.value = "StoryStrand"
+        header_title.color = t["accent"]
+        header_tagline.color = t["muted"]
+
     def on_search_change(value):
         state["search_query"] = value
         refresh_body()
@@ -620,6 +669,7 @@ def main(page: ft.Page):
         page.update()
 
     def refresh_all():
+        build_stats_row()
         refresh_body()
 
     state["selected_tab"] = 0
@@ -629,7 +679,10 @@ def main(page: ft.Page):
         label="Theme",
         value=DEFAULT_THEME,
         options=[ft.DropdownOption(key=name, text=name) for name in theme_names()],
-        on_change=lambda e: (apply_theme(e.control.value), build_tab_row(), refresh_body()),
+        on_change=lambda e: (
+            apply_theme(e.control.value), build_header_text(), build_tab_row(),
+            build_stats_row(), refresh_body(),
+        ),
         width=200,
     )
 
@@ -642,19 +695,27 @@ def main(page: ft.Page):
     )
     lazy_load_trigger_row = ft.Row(controls=[lazy_load_trigger, weave_button], wrap=True)
 
+    header_title = ft.Text(
+        "StoryStrand", size=36, weight=ft.FontWeight.BOLD,
+        font_family="Cormorant", text_align=ft.TextAlign.CENTER,
+    )
+    header_tagline = ft.Text(
+        "a library that grows one story at a time", italic=True,
+        size=13, font_family="Baskerville", text_align=ft.TextAlign.CENTER,
+    )
+    stats_row = ft.Row(spacing=8, wrap=True, run_spacing=8)
+
     header = ft.Container(
         padding=16,
         content=ft.Column(
             spacing=10,
             controls=[
-                ft.Row(
-                    controls=[
-                        ft.Text("StoryStrand", size=26, weight=ft.FontWeight.BOLD,
-                                font_family="Cormorant"),
-                        ft.Container(expand=True),
-                        theme_dropdown,
-                    ],
+                ft.Column(
+                    controls=[header_title, header_tagline],
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
+                ft.Row(controls=[ft.Container(expand=True), theme_dropdown]),
+                stats_row,
                 ft.Row(
                     controls=[
                         search_field,
@@ -675,6 +736,8 @@ def main(page: ft.Page):
     )
 
     apply_theme(DEFAULT_THEME)
+    build_header_text()
+    build_stats_row()
     refresh_body()
 
 
