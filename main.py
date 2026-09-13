@@ -19,7 +19,14 @@ Structure:
 This file wires everything together but keeps each concern (data,
 importing, theming, Google Books) in its own module so you can hand
 any one piece to me later and say "only touch this file."
+
+THEMING: colors/fonts are ported from the old app's palette system.
+See themes.py for the palette dict and pill_radius()/status_stripe_color()
+below for the two signature visual touches (asymmetric card corners,
+colored left-edge stripes) that made the old design read as distinct.
 """
+
+import threading
 
 import flet as ft
 
@@ -33,12 +40,30 @@ from google_books import (
 )
 
 
+def pill_radius():
+    """The old app's signature asymmetric container corners -
+    deliberately uneven rather than a uniform rounded rect."""
+    return ft.border_radius.only(top_left=5, top_right=20, bottom_left=5, bottom_right=20)
+
+
+def small_pill_radius():
+    return ft.border_radius.only(top_left=12, top_right=5, bottom_left=12, bottom_right=5)
+
+
+def status_stripe_key(book: Book) -> str:
+    """Returns a THEME key ('accent'/'accent2'/'muted') - caller
+    resolves it against the active palette. This app's Book model
+    only tracks read/unread (no "Currently Reading" state), so it
+    maps to two of the old app's three stripe colors."""
+    return "accent2" if book.read else "muted"
+
+
 def main(page: ft.Page):
     page.title = "StoryStrand"
     page.padding = 0
     page.fonts = {
-        "Vintage-Display": "https://cdn.jsdelivr.net/gh/google/fonts/ofl/cinzeldecorative/CinzelDecorative-Bold.ttf",
-        "Vintage-Body": "https://cdn.jsdelivr.net/gh/google/fonts/ofl/eb-garamond/EBGaramond%5Bwght%5D.ttf",
+        "Cormorant": "https://fonts.gstatic.com/s/cormorantgaramond/v16/co3bmX5slCNuHLi8bLeY9MK7whWMhyjYrEtGhtRXO0k.ttf",
+        "Baskerville": "https://fonts.gstatic.com/s/librebaskerville/v14/kmKnZrc3Hgbbcjq75U4uslyuy4kn0qNZaxLBpg.ttf",
     }
 
     library = Library()
@@ -53,15 +78,15 @@ def main(page: ft.Page):
     def apply_theme(theme_name: str):
         t = THEMES[theme_name]
         state["theme"] = theme_name
-        page.bgcolor = t["background"]
+        page.bgcolor = t["page"]
         page.theme = ft.Theme(
             color_scheme=ft.ColorScheme(
-                primary=t["primary"],
-                secondary=t["secondary"],
+                primary=t["accent"],
+                secondary=t["accent2"],
                 surface=t["surface"],
                 on_surface=t["text"],
             ),
-            font_family="Vintage-Body",
+            font_family="Baskerville",
         )
         page.update()
 
@@ -98,16 +123,17 @@ def main(page: ft.Page):
             )
             page.open(confirm_dialog)
 
+        cover_radius = ft.border_radius.only(top_left=3, top_right=8, bottom_left=3, bottom_right=8)
         if book.cover_url:
             cover = ft.Container(
-                width=44, height=64, border_radius=4,
+                width=44, height=64, border_radius=cover_radius,
                 clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
                 content=ft.Image(src=book.cover_url, width=44, height=64, fit=ft.BoxFit.COVER),
             )
         else:
             cover = ft.Container(
-                width=44, height=64, border_radius=4,
-                bgcolor=ft.Colors.with_opacity(0.12, ft.Colors.WHITE),
+                width=44, height=64, border_radius=cover_radius,
+                bgcolor=t["surface2"],
                 alignment=ft.alignment.center,
                 content=ft.Icon(ft.Icons.MENU_BOOK, size=20, color=t["accent"]),
             )
@@ -127,9 +153,10 @@ def main(page: ft.Page):
         subtitle = "  •  ".join(subtitle_bits)
 
         return ft.Container(
-            padding=8,
-            border_radius=8,
+            padding=10,
+            border_radius=pill_radius(),
             bgcolor=t["surface"],
+            border=ft.border.only(left=ft.BorderSide(4, t[status_stripe_key(book)])),
             content=ft.Row(
                 controls=[
                     cover,
@@ -137,24 +164,25 @@ def main(page: ft.Page):
                         expand=True,
                         spacing=0,
                         controls=[
-                            ft.Text(book.title, size=14, weight=ft.FontWeight.BOLD, color=t["text"]),
-                            ft.Text(subtitle, size=11, italic=True, color=t["text"]),
+                            ft.Text(book.title, size=14, weight=ft.FontWeight.BOLD,
+                                     color=t["text"], font_family="Baskerville"),
+                            ft.Text(subtitle, size=11, italic=True, color=t["muted"]),
                         ],
                     ),
                     ft.IconButton(
                         icon=ft.Icons.STAR if book.favorite else ft.Icons.STAR_BORDER,
-                        icon_color=t["favorite"],
+                        icon_color=t["accent"],
                         tooltip="Favorite",
                         on_click=toggle_fav,
                     ),
                     ft.IconButton(
                         icon=ft.Icons.CHECK_CIRCLE if book.read else ft.Icons.CHECK_CIRCLE_OUTLINE,
-                        icon_color=t["accent"],
+                        icon_color=t["accent2"],
                         tooltip="Read / Unread",
                         on_click=toggle_read,
                     ),
-                    ft.IconButton(icon=ft.Icons.EDIT, tooltip="Edit", on_click=edit),
-                    ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, tooltip="Remove", on_click=remove),
+                    ft.IconButton(icon=ft.Icons.EDIT, icon_color=t["muted"], tooltip="Edit", on_click=edit),
+                    ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color=t["muted"], tooltip="Remove", on_click=remove),
                 ],
             ),
         )
@@ -177,6 +205,12 @@ def main(page: ft.Page):
                 is_series = branch_key.startswith("series::")
                 branch_label = branch_key.split("::", 1)[1] if is_series else books[0].title
                 branch_icon = ft.Icons.COLLECTIONS_BOOKMARK if is_series else ft.Icons.BOOKMARK_BORDER
+
+                if is_series:
+                    # Chronological reading order within the series -
+                    # books with no series_index sort last rather than
+                    # colliding at the front with #1.
+                    books = sorted(books, key=lambda b: (b.series_index is None, b.series_index or 0))
 
                 book_column = ft.Column(
                     controls=[render_book_card(b) for b in books],
@@ -205,7 +239,7 @@ def main(page: ft.Page):
                 branch_controls.append(
                     ft.Container(
                         padding=ft.padding.only(left=14),
-                        border=ft.border.only(left=ft.BorderSide(2, t["branch_line"])),
+                        border=ft.border.only(left=ft.BorderSide(2, t["line"])),
                         content=ft.Column(controls=[header, book_column], spacing=4),
                     )
                 )
@@ -226,14 +260,14 @@ def main(page: ft.Page):
                 controls=[
                     ft.Icon(ft.Icons.PERSON_OUTLINE, color=t["accent"]),
                     ft.Text(author, size=16, weight=ft.FontWeight.BOLD, color=t["text"],
-                            font_family="Vintage-Display"),
+                            font_family="Cormorant"),
                     ft.Container(expand=True),
                     ft.IconButton(icon=ft.Icons.EXPAND_MORE, on_click=make_author_toggle()),
                 ],
             )
             author_controls.append(
                 ft.Container(
-                    padding=10, border_radius=8, bgcolor=t["primary"],
+                    padding=10, border_radius=pill_radius(), bgcolor=t["card"],
                     content=ft.Column(controls=[author_header, author_column], spacing=6),
                 )
             )
@@ -242,7 +276,7 @@ def main(page: ft.Page):
             return ft.Container(
                 padding=30,
                 content=ft.Text("No books yet — import a file or add one manually.",
-                                 italic=True, color=t["text"]),
+                                 italic=True, color=t["muted"]),
             )
 
         return ft.Column(controls=author_controls, spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
@@ -250,7 +284,7 @@ def main(page: ft.Page):
     def build_flat_list(books) -> ft.Control:
         if not books:
             t = THEMES[state["theme"]]
-            return ft.Container(padding=30, content=ft.Text("Nothing here yet.", italic=True, color=t["text"]))
+            return ft.Container(padding=30, content=ft.Text("Nothing here yet.", italic=True, color=t["muted"]))
         return ft.Column(
             controls=[render_book_card(b) for b in books],
             spacing=8, scroll=ft.ScrollMode.AUTO, expand=True,
@@ -308,7 +342,7 @@ def main(page: ft.Page):
             by_series.setdefault(series_name, [])
 
         if not by_series:
-            return ft.Container(padding=30, content=ft.Text("No series tracked yet.", italic=True, color=t["text"]))
+            return ft.Container(padding=30, content=ft.Text("No series tracked yet.", italic=True, color=t["muted"]))
 
         blocks = []
         for series_name, books in sorted(by_series.items(), key=lambda kv: kv[0].lower()):
@@ -320,10 +354,10 @@ def main(page: ft.Page):
             ]
             blocks.append(
                 ft.Container(
-                    padding=10, border_radius=8, bgcolor=t["surface"],
+                    padding=10, border_radius=pill_radius(), bgcolor=t["surface"],
                     content=ft.Column(controls=[
                         ft.Text(series_name, size=15, weight=ft.FontWeight.BOLD,
-                                color=t["text"], font_family="Vintage-Display"),
+                                color=t["text"], font_family="Cormorant"),
                         ft.Column(controls=owned_cards + ghost_cards, spacing=6),
                     ]),
                 )
@@ -433,22 +467,36 @@ def main(page: ft.Page):
     def on_files_picked(e: ft.FilePickerResultEvent):
         if not e.files:
             return
-        imported_count = 0
-        errors = []
-        for f in e.files:
-            try:
-                new_books = import_file(f.path)
-                for b in new_books:
-                    library.add_book(b, persist=False)
-                imported_count += len(new_books)
-            except Exception as ex:
-                errors.append(f"{f.name}: {ex}")
-        library.save()
-        refresh_all()
-        msg = f"Imported {imported_count} book(s)."
-        if errors:
-            msg += " Some files had issues: " + "; ".join(errors)
-        page.open(ft.SnackBar(ft.Text(msg)))
+        files = list(e.files)
+
+        # Parsing (especially .doc/.pdf heuristic extraction) can take
+        # a real moment on a big file - doing it inline here used to
+        # freeze the UI thread for that whole time. Running it on a
+        # background thread keeps the app responsive; refresh_all()
+        # and the result snackbar only fire once parsing is done.
+        page.open(ft.SnackBar(ft.Text(f"Importing {len(files)} file(s)…")))
+        page.update()
+
+        def _run_import():
+            imported_count = 0
+            errors = []
+            for f in files:
+                try:
+                    new_books = import_file(f.path)
+                    for b in new_books:
+                        library.add_book(b, persist=False)
+                    imported_count += len(new_books)
+                except Exception as ex:
+                    errors.append(f"{f.name}: {ex}")
+            library.save()
+            msg = f"Imported {imported_count} book(s)."
+            if errors:
+                msg += " Some files had issues: " + "; ".join(errors)
+            refresh_all()
+            page.open(ft.SnackBar(ft.Text(msg)))
+            page.update()
+
+        threading.Thread(target=_run_import, daemon=True).start()
 
     file_picker.on_result = on_files_picked
 
@@ -513,14 +561,15 @@ def main(page: ft.Page):
             buttons.append(
                 ft.Container(
                     padding=ft.padding.symmetric(horizontal=14, vertical=8),
-                    border_radius=20,
-                    bgcolor=t["accent"] if selected else ft.Colors.with_opacity(0.08, ft.Colors.WHITE),
+                    border_radius=small_pill_radius(),
+                    bgcolor=t["accent"] if selected else t["surface"],
                     on_click=make_click(),
                     content=ft.Text(
                         label,
-                        color=t["background"] if selected else t["text"],
+                        color=t["page"] if selected else t["text"],
                         weight=ft.FontWeight.BOLD if selected else ft.FontWeight.NORMAL,
                         size=13,
+                        font_family="Baskerville",
                     ),
                 )
             )
@@ -601,7 +650,7 @@ def main(page: ft.Page):
                 ft.Row(
                     controls=[
                         ft.Text("StoryStrand", size=26, weight=ft.FontWeight.BOLD,
-                                font_family="Vintage-Display"),
+                                font_family="Cormorant"),
                         ft.Container(expand=True),
                         theme_dropdown,
                     ],
