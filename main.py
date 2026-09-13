@@ -749,9 +749,15 @@ def main(page: ft.Page):
 
             def make_click(idx=i):
                 def _click(e):
-                    state["selected_tab"] = idx
-                    build_tab_row()
-                    refresh_body()
+                    try:
+                        state["selected_tab"] = idx
+                        build_tab_row()
+                        refresh_body()
+                    except Exception as ex:
+                        import traceback
+                        traceback.print_exc()
+                        page.open(ft.SnackBar(ft.Text(f"tab click failed: {ex}"), bgcolor="red"))
+                        page.update()
                 return _click
 
             buttons.append(
@@ -796,9 +802,15 @@ def main(page: ft.Page):
 
         def stat_tile(number, label):
             def _on_click(e):
-                state["selected_tab"] = label_to_tab_index[label]
-                build_tab_row()
-                refresh_body()
+                try:
+                    state["selected_tab"] = label_to_tab_index[label]
+                    build_tab_row()
+                    refresh_body()
+                except Exception as ex:
+                    import traceback
+                    traceback.print_exc()
+                    page.open(ft.SnackBar(ft.Text(f"tile click failed: {ex}"), bgcolor="red"))
+                    page.update()
 
             return ft.Container(
                 content=ft.Column(
@@ -840,48 +852,60 @@ def main(page: ft.Page):
         page.update()  # FIX: push this change immediately instead of relying on a later, unrelated update()
 
     def on_search_change(value):
-        state["search_query"] = value
-        refresh_body()
+        try:
+            state["search_query"] = value
+            refresh_body()
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            page.open(ft.SnackBar(ft.Text(f"search failed: {ex}"), bgcolor="red"))
+            page.update()
 
     def refresh_body():
-        query = state["search_query"]
-        idx = current_tab_index()
+        try:
+            query = state["search_query"]
+            idx = current_tab_index()
 
-        if query:
-            matched_ids = {b.id for b in library.search(query)}
-            if idx == 0:
-                content = build_tree(filtered_ids=matched_ids)
-            elif idx == 1:
-                content = build_flat_list([b for b in library.search(query) if b.series])
-            elif idx == 2:
-                content = build_flat_list(
-                    sorted(library.search(query), key=lambda b: b.title.lower())
-                )
-            elif idx == 3:
-                content = build_flat_list([b for b in library.search(query) if b.read])
-            elif idx == 4:
-                content = build_flat_list([b for b in library.search(query) if not b.read])
+            if query:
+                matched_ids = {b.id for b in library.search(query)}
+                if idx == 0:
+                    content = build_tree(filtered_ids=matched_ids)
+                elif idx == 1:
+                    content = build_flat_list([b for b in library.search(query) if b.series])
+                elif idx == 2:
+                    content = build_flat_list(
+                        sorted(library.search(query), key=lambda b: b.title.lower())
+                    )
+                elif idx == 3:
+                    content = build_flat_list([b for b in library.search(query) if b.read])
+                elif idx == 4:
+                    content = build_flat_list([b for b in library.search(query) if not b.read])
+                else:
+                    content = build_flat_list([b for b in library.search(query) if b.favorite])
             else:
-                content = build_flat_list([b for b in library.search(query) if b.favorite])
-        else:
-            if idx == 0:
-                content = build_tree()
-            elif idx == 1:
-                content = build_series_view()
-            elif idx == 2:
-                content = build_books_view()
-            elif idx == 3:
-                content = build_flat_list(library.read_books())
-            elif idx == 4:
-                content = build_flat_list(library.unread_books())
-            else:
-                content = build_flat_list(library.favorites())
+                if idx == 0:
+                    content = build_tree()
+                elif idx == 1:
+                    content = build_series_view()
+                elif idx == 2:
+                    content = build_books_view()
+                elif idx == 3:
+                    content = build_flat_list(library.read_books())
+                elif idx == 4:
+                    content = build_flat_list(library.unread_books())
+                else:
+                    content = build_flat_list(library.favorites())
 
-        body_holder.content = ft.Column(
-            controls=[content, ft.Divider(), lazy_load_trigger_row, lazy_load_column],
-            expand=True, scroll=ft.ScrollMode.AUTO,
-        )
-        page.update()
+            body_holder.content = ft.Column(
+                controls=[content, ft.Divider(), lazy_load_trigger_row, lazy_load_column],
+                expand=True, scroll=ft.ScrollMode.AUTO,
+            )
+            page.update()
+        except Exception as ex:
+            import traceback
+            traceback.print_exc()
+            page.open(ft.SnackBar(ft.Text(f"refresh_body failed: {ex}"), bgcolor="red"))
+            page.update()
 
     def refresh_all():
         build_stats_row()
