@@ -1,6 +1,7 @@
 """
 StoryStrand - themes.py
-Ten color themes, ported from SpineVesper's palette (data.py THEMES).
+Color themes, ported from SpineVesper's palette (data.py THEMES), plus
+one StoryStrand-original: Enchanted Library.
 
 SpineVesper used CSS-custom-property-style keys: page/surface/surface2/
 card/text/muted/accent/accent2/line. This file's mapping onto
@@ -119,6 +120,19 @@ THEMES = {
         "accent": "#8A1F2B",
         "branch_line": "#5C141C",
         "favorite": "#8A1F2B",
+    },
+    "Enchanted Library": {
+        # Warm parchment + gold-leaf, distinct from the other nine
+        # (which all run dark/jewel-toned) — reads like old paper and
+        # candlelight rather than a moody nightscape.
+        "primary": "#8B5E34",
+        "secondary": "#6B8F71",
+        "background": "#F4E9D8",
+        "surface": "#EBDBC0",
+        "text": "#3B2A1A",
+        "accent": "#C08A28",
+        "branch_line": "#B08B5A",
+        "favorite": "#C08A28",
     },
 }
 
