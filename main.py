@@ -210,14 +210,26 @@ def main(page: ft.Page):
     # ---------------- collapsible tree (Authors tab) ----------------
 
     def build_tree(filtered_ids=None) -> ft.Control:
-        """FIX: restyled as a dropping family-tree — each author/series
-        is a rounded 'node' box, and expanding it drops a vertical
-        trunk line down to its children, each prefixed with a small
-        elbow connector ('└─'), the way a family-tree chart branches
-        from a parent box down to its children. Still fully collapsible
-        (author/series start closed) so this stays usable with 672+
-        authors instead of trying to lay the whole thing out at once
-        like a fixed-size chart would."""
+        """FIX: styled as a dropping family-tree — each author/series is a
+        rounded 'node' box, and its children hang directly beneath it,
+        indented and marked by a left trunk line, the way a family-tree
+        chart branches from a parent box down to its children. Still
+        fully collapsible (author/series start closed) so this stays
+        usable with 672+ authors instead of trying to lay everything out
+        at once like a fixed-size chart would.
+
+        FIX: this deliberately avoids wrapping any child in a Row +
+        expand=True Container. An earlier version did that for the
+        trunk-line + elbow-connector look, and it caused book titles to
+        render squeezed into a couple of pixels of width (wrapping one
+        or two characters per line): a Row's flexible/expand child needs
+        a parent with a definite bounded width to flex within, and
+        nested this many levels deep inside plain Columns, that bound
+        wasn't reliably there. Plain Column-in-Column nesting (as used
+        below, and as the original working version of this app used)
+        doesn't have that problem, so the indent + left border here
+        stands in for the elbow/trunk-line visual instead.
+        """
         t = THEMES[state["theme"]]
         tree_data = library.tree()
         author_controls = []
@@ -240,21 +252,11 @@ def main(page: ft.Page):
                     # colliding at the front with #1.
                     books = sorted(books, key=lambda b: (b.series_index is None, b.series_index or 0))
 
-                # FIX: each book gets a small "└─" elbow, like a leaf
-                # hanging off the branch's trunk line, instead of just
-                # sitting in a plain list.
-                book_rows = [
-                    ft.Row(
-                        controls=[
-                            ft.Text("└─", color=t["line"], size=13),
-                            ft.Container(render_book_card(b), expand=True),
-                        ],
-                        spacing=4,
-                        vertical_alignment=ft.CrossAxisAlignment.START,
-                    )
-                    for b in books
-                ]
-                book_column = ft.Column(controls=book_rows, spacing=6, visible=False)
+                book_column = ft.Column(
+                    controls=[render_book_card(b) for b in books],
+                    spacing=6,
+                    visible=False,
+                )
 
                 def make_toggle(col=book_column):
                     def _toggle(e):
@@ -283,18 +285,17 @@ def main(page: ft.Page):
                         ],
                     ),
                 )
-                # FIX: vertical trunk line drops from the branch node
-                # down to its books, instead of a plain left border.
+                # FIX: children hang directly under the node box, indented
+                # and marked with a left trunk line - plain Column nesting,
+                # no Row/expand involved.
                 branch_controls.append(
                     ft.Column(
                         controls=[
                             branch_node,
-                            ft.Row(
-                                controls=[
-                                    ft.Container(width=2, bgcolor=t["line"], margin=ft.margin.only(left=12)),
-                                    ft.Container(content=book_column, expand=True, padding=ft.padding.only(top=6)),
-                                ],
-                                spacing=10,
+                            ft.Container(
+                                padding=ft.padding.only(left=16, top=6),
+                                border=ft.border.only(left=ft.BorderSide(2, t["line"])),
+                                content=book_column,
                             ),
                         ],
                         spacing=4,
@@ -324,22 +325,18 @@ def main(page: ft.Page):
                     ft.IconButton(icon=ft.Icons.EXPAND_MORE, on_click=make_author_toggle()),
                 ],
             )
-            # FIX: author node also drops its own trunk line down to
-            # its branch boxes, so the whole thing reads as one
-            # continuous tree: Author box -> trunk -> Series/Standalone
-            # box -> trunk -> "└─" Book, top to bottom.
+            # FIX: author node also has its branch boxes hanging directly
+            # beneath it, indented + left-lined, same plain-Column nesting.
             author_controls.append(
                 ft.Container(
                     padding=10, border_radius=pill_radius(), bgcolor=t["card"],
                     content=ft.Column(
                         controls=[
                             author_header,
-                            ft.Row(
-                                controls=[
-                                    ft.Container(width=2, bgcolor=t["line"], margin=ft.margin.only(left=8)),
-                                    ft.Container(content=author_column, expand=True, padding=ft.padding.only(top=4)),
-                                ],
-                                spacing=10,
+                            ft.Container(
+                                padding=ft.padding.only(left=12, top=4),
+                                border=ft.border.only(left=ft.BorderSide(2, t["line"])),
+                                content=author_column,
                             ),
                         ],
                         spacing=6,
