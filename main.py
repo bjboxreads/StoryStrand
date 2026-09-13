@@ -37,6 +37,12 @@ colored left-edge stripes) that made the old design read as distinct.
    matching the old app's Import-tab checkboxes + "Looked up X of Y..."
    status, instead of new imports sitting metadata-less until the user
    taps "Find Missing Book Info" themselves.
+4. FIX: build_tree() (Authors tab) restyled to look like a dropping
+   family tree - rounded box "nodes" for each author/series, connected
+   by a vertical trunk line down to their children, each child prefixed
+   with a small "└─" elbow. Still collapsible by default so this stays
+   usable at 672+ authors instead of trying to lay everything out at
+   once like a fixed genealogy chart would.
 """
 
 import threading
@@ -204,6 +210,14 @@ def main(page: ft.Page):
     # ---------------- collapsible tree (Authors tab) ----------------
 
     def build_tree(filtered_ids=None) -> ft.Control:
+        """FIX: restyled as a dropping family-tree — each author/series
+        is a rounded 'node' box, and expanding it drops a vertical
+        trunk line down to its children, each prefixed with a small
+        elbow connector ('└─'), the way a family-tree chart branches
+        from a parent box down to its children. Still fully collapsible
+        (author/series start closed) so this stays usable with 672+
+        authors instead of trying to lay the whole thing out at once
+        like a fixed-size chart would."""
         t = THEMES[state["theme"]]
         tree_data = library.tree()
         author_controls = []
@@ -226,11 +240,21 @@ def main(page: ft.Page):
                     # colliding at the front with #1.
                     books = sorted(books, key=lambda b: (b.series_index is None, b.series_index or 0))
 
-                book_column = ft.Column(
-                    controls=[render_book_card(b) for b in books],
-                    spacing=6,
-                    visible=False,
-                )
+                # FIX: each book gets a small "└─" elbow, like a leaf
+                # hanging off the branch's trunk line, instead of just
+                # sitting in a plain list.
+                book_rows = [
+                    ft.Row(
+                        controls=[
+                            ft.Text("└─", color=t["line"], size=13),
+                            ft.Container(render_book_card(b), expand=True),
+                        ],
+                        spacing=4,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
+                    )
+                    for b in books
+                ]
+                book_column = ft.Column(controls=book_rows, spacing=6, visible=False)
 
                 def make_toggle(col=book_column):
                     def _toggle(e):
@@ -239,29 +263,48 @@ def main(page: ft.Page):
                         page.update()
                     return _toggle
 
-                header = ft.Row(
-                    controls=[
-                        ft.Icon(branch_icon, size=16, color=t["accent"]),
-                        ft.Text(
-                            branch_label if is_series else f"{branch_label} (standalone)",
-                            size=13, color=t["text"],
-                        ),
-                        ft.Container(expand=True),
-                        ft.IconButton(icon=ft.Icons.EXPAND_MORE, icon_size=18, on_click=make_toggle()),
-                    ],
+                # FIX: branch header is now a rounded box ("node"),
+                # matching the boxed-ancestor look of a family-tree
+                # chart, rather than a plain unboxed row of text.
+                branch_node = ft.Container(
+                    padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                    border_radius=small_pill_radius(),
+                    bgcolor=t["surface2"],
+                    content=ft.Row(
+                        controls=[
+                            ft.Icon(branch_icon, size=16, color=t["accent"]),
+                            ft.Text(
+                                branch_label if is_series else f"{branch_label} (standalone)",
+                                size=13, color=t["text"],
+                            ),
+                            ft.Container(expand=True),
+                            ft.Text(f"({len(books)})", size=11, color=t["muted"]),
+                            ft.IconButton(icon=ft.Icons.EXPAND_MORE, icon_size=18, on_click=make_toggle()),
+                        ],
+                    ),
                 )
+                # FIX: vertical trunk line drops from the branch node
+                # down to its books, instead of a plain left border.
                 branch_controls.append(
-                    ft.Container(
-                        padding=ft.padding.only(left=14),
-                        border=ft.border.only(left=ft.BorderSide(2, t["line"])),
-                        content=ft.Column(controls=[header, book_column], spacing=4),
+                    ft.Column(
+                        controls=[
+                            branch_node,
+                            ft.Row(
+                                controls=[
+                                    ft.Container(width=2, bgcolor=t["line"], margin=ft.margin.only(left=12)),
+                                    ft.Container(content=book_column, expand=True, padding=ft.padding.only(top=6)),
+                                ],
+                                spacing=10,
+                            ),
+                        ],
+                        spacing=4,
                     )
                 )
 
             if not branch_controls:
                 continue
 
-            author_column = ft.Column(controls=branch_controls, spacing=8, visible=False)
+            author_column = ft.Column(controls=branch_controls, spacing=10, visible=False)
 
             def make_author_toggle(col=author_column):
                 def _toggle(e):
@@ -270,19 +313,37 @@ def main(page: ft.Page):
                     page.update()
                 return _toggle
 
+            total_books = sum(len(v) for v in branches.values())
             author_header = ft.Row(
                 controls=[
                     ft.Icon(ft.Icons.PERSON_OUTLINE, color=t["accent"]),
                     ft.Text(author, size=16, weight=ft.FontWeight.BOLD, color=t["text"],
                             font_family="Cormorant"),
                     ft.Container(expand=True),
+                    ft.Text(f"({total_books})", size=12, color=t["muted"]),
                     ft.IconButton(icon=ft.Icons.EXPAND_MORE, on_click=make_author_toggle()),
                 ],
             )
+            # FIX: author node also drops its own trunk line down to
+            # its branch boxes, so the whole thing reads as one
+            # continuous tree: Author box -> trunk -> Series/Standalone
+            # box -> trunk -> "└─" Book, top to bottom.
             author_controls.append(
                 ft.Container(
                     padding=10, border_radius=pill_radius(), bgcolor=t["card"],
-                    content=ft.Column(controls=[author_header, author_column], spacing=6),
+                    content=ft.Column(
+                        controls=[
+                            author_header,
+                            ft.Row(
+                                controls=[
+                                    ft.Container(width=2, bgcolor=t["line"], margin=ft.margin.only(left=8)),
+                                    ft.Container(content=author_column, expand=True, padding=ft.padding.only(top=4)),
+                                ],
+                                spacing=10,
+                            ),
+                        ],
+                        spacing=6,
+                    ),
                 )
             )
 
