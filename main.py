@@ -323,7 +323,7 @@ def main(page: ft.Page):
     # ---------------- import ----------------
 
     file_picker = ft.FilePicker()
-    page.overlay.append(file_picker)
+    page.services.append(file_picker)
 
     def on_files_picked(e: ft.FilePickerResultEvent):
         if not e.files:
