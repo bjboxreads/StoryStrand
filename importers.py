@@ -146,6 +146,35 @@ def import_file(path: str) -> List[Book]:
 
 # ---------------- CSV ----------------
 
+def _detect_read_status(row, col) -> bool:
+    """FIX: the importer previously never set Book.read at all, so
+    every imported book silently defaulted to unread regardless of
+    what the CSV said - this is why "Read" showed 0 and "Unread"
+    showed the full count even for a Goodreads-style export that
+    clearly has read/unread info in it.
+
+    Checks, in order: an explicit "read" column (true/false/yes/1),
+    then a shelf/status column (Goodreads' "Exclusive Shelf", or
+    plain "Status"/"Shelf"), then falls back to "has a Date Read
+    value" as a last resort signal."""
+    read_col_raw = col(row, "read").strip().lower()
+    if read_col_raw:
+        return read_col_raw in ("true", "1", "1.0", "yes", "y", "read")
+
+    shelf = col(row, "exclusive shelf", "shelf", "status", "read status").strip().lower()
+    if shelf:
+        if "currently" in shelf:
+            return False
+        if shelf in ("read", "finished") or ("read" in shelf and "to-read" not in shelf and "to read" not in shelf):
+            return True
+        if "to-read" in shelf or "to read" in shelf or "want" in shelf or "wishlist" in shelf:
+            return False
+        return False
+
+    date_read = col(row, "date read", "read date").strip()
+    return bool(date_read)
+
+
 def _import_csv(path: str) -> List[Book]:
     books = []
     with open(path, newline="", encoding="utf-8-sig") as f:
@@ -180,6 +209,7 @@ def _import_csv(path: str) -> List[Book]:
             series_index_raw = col(row, "series_index", "series #", "#")
             isbn = clean_isbn(col(row, "isbn"))  # FIX: was raw col(row, "isbn")
             genre = col(row, "genre")
+            read = _detect_read_status(row, col)  # FIX: was never set at all before
         else:
             # no header: assume title, author, series order
             title = row[0].strip() if len(row) > 0 else ""
@@ -188,6 +218,7 @@ def _import_csv(path: str) -> List[Book]:
             series_index_raw = ""
             isbn = ""
             genre = ""
+            read = False
 
         if not title:
             continue
@@ -207,9 +238,11 @@ def _import_csv(path: str) -> List[Book]:
             title=title,
             author=author or "Unknown Author",
             series=series,
+
             series_index=series_index,
             isbn=isbn,
             genre=genre,
+            read=read,  # FIX: was never passed at all
         ))
     return books
 
