@@ -7,13 +7,30 @@ the other formats are parsed heuristically, one book guess per line, in
 the form "Title - Author" or "Title (Series #N) - Author". Anything that
 can't be parsed cleanly is still imported with a best-effort title so the
 user can fix it up manually afterward.
+
+--- FIXES APPLIED (see comments marked "FIX:") ---
+1. FIX: added detect_series_from_title() / detect_series_index() /
+   clean_title_for_lookup(), ported from the old app's data.py
+   (detect_series / detect_series_number / clean_title_for_lookup).
+   The old app used these as a fallback whenever a CSV had no usable
+   series column (or the cell was blank) - the new importer was missing
+   this entirely, so every book without an explicit "series" column
+   silently came in as a standalone with the raw "(Series, #N)" still
+   stuck in the title, which is why a real import showed "0 series"
+   despite hundreds of books actually belonging to series.
+2. FIX: added clean_isbn(), also ported from the old app, which strips
+   the `="..."` wrapper Excel adds when it exports an ISBN column as
+   text (otherwise Excel would treat a 13-digit ISBN as a number and
+   mangle it). Without this, an ISBN cell exported by Excel/Goodreads
+   came through as the literal string `="9781234567890"` instead of
+   the ISBN.
 """
 
 from __future__ import annotations
 import csv
 import os
 import re
-from typing import List
+from typing import List, Optional, Tuple
 from models import Book
 
 SUPPORTED_EXTENSIONS = {".csv", ".txt", ".docx", ".pdf", ".doc"}
@@ -24,6 +41,92 @@ LINE_PATTERN = re.compile(
     r"(?:\s*\((?P<series>.+?)(?:\s*#\s*(?P<index>[\d.]+))?\))?"
     r"\s*(?:-|–|—|,)\s*(?P<author>.+?)\s*$"
 )
+
+# FIX: title-embedded series patterns, ported from the old app's
+# detect_series()/detect_series_number() so CSVs/lines with no
+# explicit series column still get split into title + series + index.
+_SERIES_PATTERNS = [
+    r"\(([^()]*)#\s*(\d+(?:\.\d+)?)\)",
+    r"\[([^\[\]]*)#\s*(\d+(?:\.\d+)?)\]",
+    r"\(([^()]*)\bBook\s+(\d+(?:\.\d+)?)\)",
+    r"\[([^\[\]]*)\bBook\s+(\d+(?:\.\d+)?)\]",
+]
+_SERIES_INDEX_PATTERNS = [
+    r"#\s*(\d+(?:\.\d+)?)",
+    r"\bBook\s+(\d+(?:\.\d+)?)",
+    r"\bVol(?:ume)?\.?\s+(\d+(?:\.\d+)?)",
+]
+_SERIES_STRIP_PATTERNS = [
+    r"\([^()]*#\s*\d+(?:\.\d+)?[^()]*\)",
+    r"\[[^\[\]]*#\s*\d+(?:\.\d+)?[^\[\]]*\]",
+    r"\([^()]*\bBook\s+\d+(?:\.\d+)?[^()]*\)",
+    r"\[[^\[\]]*\bBook\s+\d+(?:\.\d+)?[^\[\]]*\]",
+]
+
+
+def detect_series_from_title(title: str) -> Optional[str]:
+    """FIX: pulls a series name out of a title like 'Bride (Bride, #1)'
+    or 'Mistborn [The Final Empire #1]'. Returns None if nothing matches
+    (i.e. the book is a genuine standalone)."""
+    text = str(title or "")
+    for pattern in _SERIES_PATTERNS:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            series = match.group(1)
+            series = re.sub(r",?\s*#\s*\d+(?:\.\d+)?", "", series, flags=re.IGNORECASE)
+            series = re.sub(r"\bBook\s+\d+(?:\.\d+)?", "", series, flags=re.IGNORECASE)
+            series = re.sub(r"\s+", " ", series).strip(" ,-:")
+            if series:
+                return series
+    return None
+
+
+def detect_series_index(title: str) -> Optional[float]:
+    """FIX: pulls the volume number out of a title, e.g. 'Bride, #1' -> 1.0."""
+    for pattern in _SERIES_INDEX_PATTERNS:
+        match = re.search(pattern, str(title or ""), re.IGNORECASE)
+        if match:
+            try:
+                return float(match.group(1))
+            except ValueError:
+                pass
+    return None
+
+
+def clean_title_for_lookup(title: str) -> str:
+    """FIX: strips the series/volume annotation back out of the title
+    once it's been captured into series/series_index, so the book's
+    stored title is just 'Bride' rather than 'Bride (Bride, #1)'."""
+    text = str(title or "")
+    for pattern in _SERIES_STRIP_PATTERNS:
+        text = re.sub(pattern, "", text, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", text).strip(" ,-:")
+
+
+def clean_isbn(raw) -> str:
+    """FIX: strips Excel's `="..."` text-cell wrapper (added so a long
+    ISBN doesn't get reinterpreted/rounded as a number) plus any other
+    stray punctuation, matching the old app's clean_isbn()."""
+    s = str(raw if raw is not None else "").strip()
+    if s.lower() in ("nan", "none", ""):
+        return ""
+    s = re.sub(r'^="?', "", s)
+    s = re.sub(r'"?$', "", s)
+    s = re.sub(r"[^0-9Xx]", "", s)
+    return s.upper()
+
+
+def _apply_title_series_detection(title: str, series: Optional[str], series_index: Optional[float]) -> Tuple[str, Optional[str], Optional[float]]:
+    """FIX: shared by both the CSV path and the line-parsing path -
+    if the caller didn't already have a series (e.g. from an explicit
+    CSV column), fall back to detecting one from the title text, and
+    strip the annotation out of the stored title either way."""
+    if not series:
+        series = detect_series_from_title(title)
+    if series and series_index is None:
+        series_index = detect_series_index(title)
+    clean_title = clean_title_for_lookup(title) if series else title.strip()
+    return (clean_title or title.strip()), series, series_index
 
 
 def import_file(path: str) -> List[Book]:
@@ -75,7 +178,7 @@ def _import_csv(path: str) -> List[Book]:
             author = col(row, "author", "authors", default="Unknown Author")
             series = col(row, "series") or None
             series_index_raw = col(row, "series_index", "series #", "#")
-            isbn = col(row, "isbn")
+            isbn = clean_isbn(col(row, "isbn"))  # FIX: was raw col(row, "isbn")
             genre = col(row, "genre")
         else:
             # no header: assume title, author, series order
@@ -95,6 +198,10 @@ def _import_csv(path: str) -> List[Book]:
                 series_index = float(series_index_raw)
             except ValueError:
                 series_index = None
+
+        # FIX: fall back to title-embedded series detection whenever the
+        # row didn't already give us a series (no column, or blank cell).
+        title, series, series_index = _apply_title_series_detection(title, series, series_index)
 
         books.append(Book(
             title=title,
@@ -126,16 +233,24 @@ def _import_lines(lines: List[str]) -> List[Book]:
                     series_index = float(match.group("index"))
                 except ValueError:
                     pass
+            series = series.strip() if series else None
+            # FIX: LINE_PATTERN already captures an explicit "(Series #N)"
+            # group when present, but titles that embed the series without
+            # matching that exact shape still benefit from the same
+            # fallback detection used on the CSV path.
+            title, series, series_index = _apply_title_series_detection(title, series, series_index)
             books.append(Book(
                 title=title,
                 author=author or "Unknown Author",
-                series=series.strip() if series else None,
+                series=series,
                 series_index=series_index,
             ))
         else:
             # fallback: whole line becomes the title, author unknown -
-            # the user (or a later metadata lookup) can fill in the rest
-            books.append(Book(title=line, author="Unknown Author"))
+            # the user (or a later metadata lookup) can fill in the rest.
+            # FIX: still worth checking for an embedded series here too.
+            title, series, series_index = _apply_title_series_detection(line, None, None)
+            books.append(Book(title=title, author="Unknown Author", series=series, series_index=series_index))
     return books
 
 
