@@ -87,14 +87,19 @@ def main(page: ft.Page):
             )
             page.open(confirm_dialog)
 
-        cover = ft.Container(
-            width=44, height=64, border_radius=4,
-            bgcolor=ft.Colors.with_opacity(0.12, ft.Colors.WHITE),
-            image_src=book.cover_url if book.cover_url else None,
-            image_fit=ft.ImageFit.COVER,
-            alignment=ft.alignment.center,
-            content=None if book.cover_url else ft.Icon(ft.Icons.MENU_BOOK, size=20, color=t["accent"]),
-        )
+        if book.cover_url:
+            cover = ft.Container(
+                width=44, height=64, border_radius=4,
+                clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
+                content=ft.Image(src=book.cover_url, width=44, height=64, fit=ft.BoxFit.COVER),
+            )
+        else:
+            cover = ft.Container(
+                width=44, height=64, border_radius=4,
+                bgcolor=ft.Colors.with_opacity(0.12, ft.Colors.WHITE),
+                alignment=ft.alignment.center,
+                content=ft.Icon(ft.Icons.MENU_BOOK, size=20, color=t["accent"]),
+            )
 
         subtitle_bits = []
         if book.series:
@@ -361,8 +366,44 @@ def main(page: ft.Page):
     body_holder = ft.Container(expand=True)
     lazy_load_column = ft.Column(spacing=6)  # ghost placeholders render here
 
+    TAB_LABELS = ["Authors", "Series", "Read", "Unread", "Favorites"]
+    tab_row = ft.Row(spacing=8)
+
     def current_tab_index():
-        return tabs.selected_index if tabs.selected_index is not None else 0
+        return state["selected_tab"]
+
+    def build_tab_row():
+        """A small self-contained tab selector, built from plain
+        Containers rather than ft.Tabs/TabBar - Flet's Tabs API has
+        changed shape across releases, so this avoids main.py breaking
+        again on a future flet upgrade."""
+        t = THEMES[state["theme"]]
+        buttons = []
+        for i, label in enumerate(TAB_LABELS):
+            selected = state["selected_tab"] == i
+
+            def make_click(idx=i):
+                def _click(e):
+                    state["selected_tab"] = idx
+                    build_tab_row()
+                    refresh_body()
+                return _click
+
+            buttons.append(
+                ft.Container(
+                    padding=ft.padding.symmetric(horizontal=14, vertical=8),
+                    border_radius=20,
+                    bgcolor=t["accent"] if selected else ft.Colors.with_opacity(0.08, ft.Colors.WHITE),
+                    on_click=make_click(),
+                    content=ft.Text(
+                        label,
+                        color=t["background"] if selected else t["text"],
+                        weight=ft.FontWeight.BOLD if selected else ft.FontWeight.NORMAL,
+                        size=13,
+                    ),
+                )
+            )
+        tab_row.controls = buttons
 
     def on_search_change(value):
         state["search_query"] = value
@@ -405,23 +446,14 @@ def main(page: ft.Page):
     def refresh_all():
         refresh_body()
 
-    tabs = ft.Tabs(
-        selected_index=0,
-        tabs=[
-            ft.Tab(text="Authors"),
-            ft.Tab(text="Series"),
-            ft.Tab(text="Read"),
-            ft.Tab(text="Unread"),
-            ft.Tab(text="Favorites"),
-        ],
-        on_change=lambda e: refresh_body(),
-    )
+    state["selected_tab"] = 0
+    build_tab_row()
 
     theme_dropdown = ft.Dropdown(
         label="Theme",
         value=DEFAULT_THEME,
-        options=[ft.dropdown.Option(name) for name in theme_names()],
-        on_change=lambda e: (apply_theme(e.control.value), refresh_body()),
+        options=[ft.DropdownOption(key=name, text=name) for name in theme_names()],
+        on_change=lambda e: (apply_theme(e.control.value), build_tab_row(), refresh_body()),
         width=200,
     )
 
@@ -454,7 +486,7 @@ def main(page: ft.Page):
                         ft.ElevatedButton("Add Book", icon=ft.Icons.ADD, on_click=lambda e: open_book_dialog()),
                     ],
                 ),
-                tabs,
+                tab_row,
             ],
         ),
     )
