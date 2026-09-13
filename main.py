@@ -24,6 +24,13 @@ THEMING: colors/fonts are ported from the old app's palette system.
 See themes.py for the palette dict and pill_radius()/status_stripe_color()
 below for the two signature visual touches (asymmetric card corners,
 colored left-edge stripes) that made the old design read as distinct.
+
+--- FIXES APPLIED (see comments marked "FIX:") ---
+1. FIX: wrapped the root control in ft.SafeArea so the header no longer
+   renders underneath the phone's status bar / notch.
+2. FIX: build_header_text() and build_stats_row() now call page.update()
+   themselves instead of relying on a later, unrelated page.update()
+   call to flush their changes to the client.
 """
 
 import threading
@@ -613,6 +620,7 @@ def main(page: ft.Page):
             )
 
         stats_row.controls = [stat_tile(n, l) for n, l in pairs]
+        page.update()  # FIX: push this change immediately instead of relying on a later, unrelated update()
 
     def build_header_text():
         """Centered title + italic tagline, colored from the active
@@ -623,6 +631,7 @@ def main(page: ft.Page):
         header_title.value = "StoryStrand"
         header_title.color = t["accent"]
         header_tagline.color = t["muted"]
+        page.update()  # FIX: push this change immediately instead of relying on a later, unrelated update()
 
     def on_search_change(value):
         state["search_query"] = value
@@ -728,9 +737,14 @@ def main(page: ft.Page):
         ),
     )
 
+    # FIX: wrap the root control in SafeArea so the header respects the
+    # device status bar / notch instead of rendering underneath it.
     page.add(
-        ft.Column(
-            controls=[header, body_holder],
+        ft.SafeArea(
+            content=ft.Column(
+                controls=[header, body_holder],
+                expand=True,
+            ),
             expand=True,
         )
     )
