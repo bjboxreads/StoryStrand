@@ -879,14 +879,8 @@ def main(page: ft.Page):
     )
 
     body_holder = ft.Container(expand=True)
-    # FIX: bounded height + its own internal scroll. This previously had
-    # no size limit and got moved into the fixed header (see below) - with
-    # ~370 ghost placeholders stacking up during a big "Find Missing Book
-    # Info" run, an unbounded column there made the header itself balloon
-    # to thousands of pixels tall (headers aren't inside the page's main
-    # scroll region), which is exactly what made the app look frozen and
-    # unscrollable with only the first couple of ghost cards visible.
-    lazy_load_column = ft.Column(spacing=6, scroll=ft.ScrollMode.AUTO, height=220)
+    # FIX: no fixed height here anymore - see lazy_load_column note below.
+    lazy_load_column = ft.Column(spacing=6)  # ghost placeholders render here
 
     TAB_LABELS = ["Authors", "Series", "Books", "Read", "Unread", "Favorites"]
     tab_row = ft.Row(spacing=8, wrap=True, run_spacing=8)
@@ -1057,12 +1051,20 @@ def main(page: ft.Page):
                     content = build_flat_list(library.favorites())
 
             # FIX (discoverability): lazy_load_trigger_row (Find Missing
-            # Book Info / Weave My Strand) and lazy_load_column used to be
-            # appended here, after every book card on the tab - buried
-            # below hundreds of cards. They now live in the fixed header
-            # instead, so body_holder only ever holds the active tab's
-            # own content.
-            body_holder.content = content
+            # Book Info / Weave My Strand) lives in the fixed header - see
+            # below - so it's visible on every tab without scrolling.
+            # FIX (this round): lazy_load_column (the ghost-card progress
+            # list) does NOT belong in the header. My previous attempt put
+            # it there with a fixed height, and because the header sits
+            # outside the page's scrollable region, that fixed block ate
+            # almost the entire screen on every tab, all the time - not
+            # just during a fetch. It belongs here, inside the same
+            # scrolling Column as the tab's own content, where it can grow
+            # or shrink freely without resizing anything else on screen.
+            body_holder.content = ft.Column(
+                controls=[content, lazy_load_column],
+                expand=True, scroll=ft.ScrollMode.AUTO,
+            )
             page.update()
         except Exception as ex:
             import traceback
@@ -1150,12 +1152,13 @@ def main(page: ft.Page):
                     ],
                 ),
                 tab_row,
-                # FIX (discoverability): these used to be appended at the
-                # bottom of the scrollable tab content, below every book
-                # card. Moved into the fixed header so they're visible on
-                # every tab without scrolling past hundreds of cards.
+                # FIX (discoverability): the trigger buttons stay in the
+                # fixed header so they're visible on every tab without
+                # scrolling. The ghost-card progress list (lazy_load_column)
+                # is NOT here - see refresh_body() - it lives in the
+                # scrollable body instead, so it can never resize the header
+                # or push tab content off-screen.
                 lazy_load_trigger_row,
-                lazy_load_column,
             ],
         ),
     )
