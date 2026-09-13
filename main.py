@@ -732,7 +732,7 @@ def main(page: ft.Page):
     lazy_load_column = ft.Column(spacing=6)  # ghost placeholders render here
 
     TAB_LABELS = ["Authors", "Series", "Books", "Read", "Unread", "Favorites"]
-    tab_row = ft.Row(spacing=8)
+    tab_row = ft.Row(spacing=8, wrap=True, run_spacing=8)
 
     def current_tab_index():
         return state["selected_tab"]
