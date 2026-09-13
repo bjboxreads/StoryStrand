@@ -261,6 +261,16 @@ def main(page: ft.Page):
         books = sorted(library.all_books(), key=lambda b: b.title.lower())
         return build_flat_list(books)
 
+    def _drop_from_missing(volume: dict):
+        series_name = volume.get("series")
+        if series_name in state["missing_by_series"]:
+            state["missing_by_series"][series_name] = [
+                v for v in state["missing_by_series"][series_name]
+                if v["title"] != volume["title"]
+            ]
+            if not state["missing_by_series"][series_name]:
+                del state["missing_by_series"][series_name]
+
     def add_missing_volume(volume: dict):
         """Called when the user taps "Add to Shelf" on a Weave My
         Strand ghost card - adds it as a real book and drops it from
@@ -272,14 +282,15 @@ def main(page: ft.Page):
             series_index=volume.get("series_index"),
             cover_url=volume.get("cover_url", ""),
         ))
-        series_name = volume.get("series")
-        if series_name in state["missing_by_series"]:
-            state["missing_by_series"][series_name] = [
-                v for v in state["missing_by_series"][series_name]
-                if v["title"] != volume["title"]
-            ]
-            if not state["missing_by_series"][series_name]:
-                del state["missing_by_series"][series_name]
+        _drop_from_missing(volume)
+        refresh_all()
+
+    def dismiss_missing_volume(volume: dict):
+        """Called when the user taps "Not in this series" on a ghost
+        card - permanently remembers that (series, title) shouldn't be
+        surfaced again, and drops it from view right away."""
+        library.dismiss_missing_volume(volume.get("series", ""), volume["title"])
+        _drop_from_missing(volume)
         refresh_all()
 
     def build_series_view() -> ft.Control:
@@ -304,7 +315,7 @@ def main(page: ft.Page):
             books.sort(key=lambda x: (x.series_index is None, x.series_index or 0))
             owned_cards = [render_book_card(b) for b in books]
             ghost_cards = [
-                render_missing_volume_ghost(v, on_add=add_missing_volume)
+                render_missing_volume_ghost(v, on_add=add_missing_volume, on_dismiss=dismiss_missing_volume)
                 for v in state["missing_by_series"].get(series_name, [])
             ]
             blocks.append(
