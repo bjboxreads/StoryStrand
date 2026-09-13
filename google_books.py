@@ -1,17 +1,18 @@
 """
 StoryStrand - google_books.py
 
-Metadata lookups against the Google Books API, plus two features:
+Metadata lookups against Google Books AND OpenLibrary, plus two features:
 
-  1. The lazy-loading pattern: a trigger button that searches Google
-     Books in the background for any book missing metadata/cover art,
-     rendering 0.6-opacity ghost placeholders while it works and
-     swapping in the real card as data arrives.
+  1. The lazy-loading pattern: a trigger button that searches for any
+     book missing metadata/cover art, rendering 0.6-opacity ghost
+     placeholders while it works and swapping in the real card as data
+     arrives. Tries Google Books first, then OpenLibrary for whatever
+     fields are still missing, instead of stopping at a single source.
 
   2. "Weave My Strand" series discovery: a trigger button that checks
-     every series in the library against Google Books and surfaces any
-     volumes that don't appear to be on the shelf yet, as ghost cards
-     the user can add with one click.
+     every series in the library against Google Books AND OpenLibrary
+     and surfaces any volumes that don't appear to be on the shelf yet,
+     as ghost cards the user can add with one click.
 
 Both are self-contained here - nothing in this file rewrites the rest
 of main.py, it only returns ready-to-place ft.Control objects.
@@ -19,6 +20,7 @@ of main.py, it only returns ready-to-place ft.Control objects.
 
 from __future__ import annotations
 import re
+import difflib
 import threading
 import requests
 import flet as ft
@@ -35,8 +37,52 @@ SERIES_INDEX_PATTERN = re.compile(
     re.IGNORECASE,
 )
 
+OPENLIBRARY_SEARCH_ENDPOINT = "https://openlibrary.org/search.json"
+# OpenLibrary throttles/blocks requests with no User-Agent much more
+# aggressively than ones that identify the app.
+OPENLIBRARY_HEADERS = {"User-Agent": "StoryStrand/1.0 (personal book library app; contact: n/a)"}
 
-# ---------------- raw API call (single-book lookup) ----------------
+STOPWORDS = {"the", "a", "an", "of", "and", "&"}
+
+
+def _normalize_words(text: str) -> List[str]:
+    words = re.findall(r"[a-z0-9]+", (text or "").lower())
+    return [w for w in words if w not in STOPWORDS]
+
+
+def _title_is_plausible_match(wanted_title: str, candidate_title: str) -> bool:
+    """A title/author search result isn't a unique key like an ISBN
+    lookup is -- reject results that don't actually look like the
+    book that was searched for."""
+    wt = " ".join(_normalize_words(wanted_title))
+    ct = " ".join(_normalize_words(candidate_title))
+    if not wt or not ct:
+        return False
+    ratio = difflib.SequenceMatcher(None, wt, ct).ratio()
+    return ratio >= 0.6 or wt in ct or ct in wt
+
+
+def _author_matches(wanted_author: str, candidate_authors: List[str]) -> bool:
+    """Rejects results that share a title but are by a different
+    author entirely. If we don't know the wanted author, nothing to
+    check against, so it passes."""
+    wanted_words = _normalize_words(wanted_author)
+    if not wanted_words or (wanted_author or "").strip().lower() == "unknown author":
+        return True
+    wanted_norm = " ".join(wanted_words)
+    wanted_last = wanted_words[-1]
+    for cand in candidate_authors or []:
+        cand_norm = " ".join(_normalize_words(cand))
+        if not cand_norm:
+            continue
+        if cand_norm in wanted_norm or wanted_norm in cand_norm:
+            return True
+        if wanted_last in cand_norm.split():
+            return True
+    return False
+
+
+# ---------------- single-book metadata lookup (multi-source) ----------------
 
 def search_google_books(title: str, author: str = "") -> Optional[dict]:
     """One lookup against the Google Books API. Returns a plain dict of
@@ -74,6 +120,92 @@ def search_google_books(title: str, author: str = "") -> Optional[dict]:
     }
 
 
+def _search_openlibrary_single(title: str, author: str = "") -> Optional[dict]:
+    """A second, independent single-book lookup used to fill gaps
+    Google Books leaves behind (or to find the book at all, if Google
+    Books simply doesn't have it). Checked for a plausible title/author
+    match before being trusted, since OpenLibrary's search endpoint
+    isn't a unique-key lookup either."""
+    params = {
+        "title": title,
+        "fields": "title,author_name,cover_i,publisher,first_publish_year,number_of_pages_median,isbn",
+        "limit": 1,
+    }
+    if author and author != "Unknown Author":
+        params["author"] = author
+
+    try:
+        resp = requests.get(OPENLIBRARY_SEARCH_ENDPOINT, params=params, timeout=10, headers=OPENLIBRARY_HEADERS)
+        resp.raise_for_status()
+        data = resp.json()
+    except (requests.RequestException, ValueError):
+        return None
+
+    docs = data.get("docs") or []
+    if not docs:
+        return None
+    doc = docs[0]
+
+    if not _title_is_plausible_match(title, doc.get("title", "")):
+        return None
+    if not _author_matches(author, doc.get("author_name", [])):
+        return None
+
+    cover_id = doc.get("cover_i")
+    isbn_list = doc.get("isbn") or []
+    return {
+        "title": doc.get("title", title),
+        "authors": ", ".join(doc.get("author_name", [])) or author,
+        "description": "",  # OpenLibrary's search endpoint doesn't return descriptions
+        "page_count": doc.get("number_of_pages_median"),
+        "categories": "",  # subject list needs a separate /works/ lookup; skipped on this fast path
+        "published": str(doc.get("first_publish_year", "")) if doc.get("first_publish_year") else "",
+        "publisher": (doc.get("publisher") or [""])[0],
+        "cover_url": f"https://covers.openlibrary.org/b/id/{cover_id}-M.jpg" if cover_id else "",
+        "isbn": isbn_list[0] if isbn_list else "",
+    }
+
+
+_MERGE_FIELDS = ["title", "authors", "description", "page_count", "categories",
+                 "published", "publisher", "cover_url", "isbn"]
+
+
+def _merge_metadata(*sources: Optional[dict]) -> Optional[dict]:
+    """Fills one result from multiple source dicts in priority order:
+    the first source wins for a given field, but a field missing from
+    an earlier source can still be filled by a later one, instead of
+    the whole lookup failing because one source came up short."""
+    merged: dict = {}
+    any_found = False
+    for source in sources:
+        if not source:
+            continue
+        any_found = True
+        for field in _MERGE_FIELDS:
+            if not merged.get(field) and source.get(field):
+                merged[field] = source[field]
+    return merged if any_found else None
+
+
+def search_book_metadata(title: str, author: str = "") -> Optional[dict]:
+    """The lookup used by 'Find Missing Book Info': tries Google Books
+    first, then OpenLibrary for whatever fields are still missing (or
+    for the whole book, if Google Books had nothing at all) -- rather
+    than stopping at a single source and calling a book unfindable
+    just because one API doesn't carry it."""
+    google_result = search_google_books(title, author)
+    still_missing = (
+        google_result is None
+        or not all([
+            google_result.get("description"), google_result.get("page_count"),
+            google_result.get("cover_url"), google_result.get("publisher"),
+            google_result.get("published"),
+        ])
+    )
+    openlibrary_result = _search_openlibrary_single(title, author) if still_missing else None
+    return _merge_metadata(google_result, openlibrary_result)
+
+
 def apply_metadata(book: Book, meta: dict) -> None:
     """Fill in only the fields the book is missing; never clobber
     something the user already entered manually."""
@@ -104,19 +236,6 @@ def apply_metadata(book: Book, meta: dict) -> None:
 # by the filters below) for a lot fewer missed hits, since a given
 # series is often better indexed in one source than the other.
 
-OPENLIBRARY_SEARCH_ENDPOINT = "https://openlibrary.org/search.json"
-# OpenLibrary throttles/blocks requests with no User-Agent much more
-# aggressively than ones that identify the app.
-OPENLIBRARY_HEADERS = {"User-Agent": "StoryStrand/1.0 (personal book library app; contact: n/a)"}
-
-STOPWORDS = {"the", "a", "an", "of", "and", "&"}
-
-
-def _normalize_words(text: str) -> List[str]:
-    words = re.findall(r"[a-z0-9]+", (text or "").lower())
-    return [w for w in words if w not in STOPWORDS]
-
-
 def _series_words_present(series_name: str, haystack: str) -> bool:
     """True only if every significant word of the series name shows up
     somewhere in the candidate title/subtitle - catches "Stormlight
@@ -127,27 +246,6 @@ def _series_words_present(series_name: str, haystack: str) -> bool:
     if not series_words:
         return False
     return series_words.issubset(set(_normalize_words(haystack)))
-
-
-def _author_matches(wanted_author: str, candidate_authors: List[str]) -> bool:
-    """Rejects results that share the series name in their title but
-    are by a different author entirely - the single biggest source of
-    false positives when a series name is generic or reused. If we
-    don't actually know the series' author, nothing to check against."""
-    wanted_words = _normalize_words(wanted_author)
-    if not wanted_words or (wanted_author or "").strip().lower() == "unknown author":
-        return True
-    wanted_norm = " ".join(wanted_words)
-    wanted_last = wanted_words[-1]
-    for cand in candidate_authors or []:
-        cand_norm = " ".join(_normalize_words(cand))
-        if not cand_norm:
-            continue
-        if cand_norm in wanted_norm or wanted_norm in cand_norm:
-            return True
-        if wanted_last in cand_norm.split():
-            return True
-    return False
 
 
 def _guess_series_index(title: str) -> Optional[float]:
@@ -392,7 +490,7 @@ def _ghost_card(title: str) -> ft.Container:
                     spacing=2,
                     controls=[
                         ft.Text(title, italic=True, size=13),
-                        ft.Text("Searching Google Books…", size=11, italic=True),
+                        ft.Text("Searching Google Books & OpenLibrary…", size=11, italic=True),
                         ft.ProgressRing(width=14, height=14, stroke_width=2),
                     ],
                 ),
@@ -401,7 +499,7 @@ def _ghost_card(title: str) -> ft.Container:
     )
 
 
-# ---------------- the lazy-load trigger (existing feature, unchanged) ----------------
+# ---------------- the lazy-load trigger ----------------
 
 def build_lazy_load_trigger(
     page: ft.Page,
@@ -415,15 +513,16 @@ def build_lazy_load_trigger(
       1. Finds books missing metadata/covers in the library.
       2. Immediately renders a 0.6-opacity ghost placeholder for each
          one inside `target_column`.
-      3. Kicks off a background thread that calls the Google Books API
-         for each missing book one at a time.
+      3. Kicks off a background thread that looks up each missing book
+         one at a time via search_book_metadata (Google Books, then
+         OpenLibrary for whatever's still missing).
       4. As each result comes back, swaps that book's ghost placeholder
          for the real card produced by `render_book_card`.
     """
 
     def _run_background_search(missing_books: List[Book], placeholder_index: dict):
         for book in missing_books:
-            meta = search_google_books(book.title, book.author)
+            meta = search_book_metadata(book.title, book.author)
             if meta:
                 apply_metadata(book, meta)
                 library.save()
