@@ -1,0 +1,16 @@
+[project]
+name = "storystrand"
+version = "1.0.0"
+description = "StoryStrand book tracker"
+requires-python = ">=3.9"
+dependencies = [
+  "flet"
+]
+
+[tool.flet.app]
+path = "."
+
+[tool.flet]
+org = "com.bjboxreads"
+product = "StoryStrand"
+company = "bjboxreads"
