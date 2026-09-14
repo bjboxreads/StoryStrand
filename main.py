@@ -1061,9 +1061,16 @@ def main(page: ft.Page):
             # just during a fetch. It belongs here, inside the same
             # scrolling Column as the tab's own content, where it can grow
             # or shrink freely without resizing anything else on screen.
+            # FIX: this wrapper must NOT itself be scrollable - `content`
+            # (from build_tree/build_flat_list/build_series_view) is
+            # already its own scroll=AUTO, expand=True Column. Nesting
+            # two scrollable+expand Columns is invalid Flutter layout:
+            # the inner one never gets a real bounded height, so it was
+            # silently rendering only ~1 screenful of cards (e.g. 10 of
+            # 672 books) no matter how many actually matched.
             body_holder.content = ft.Column(
                 controls=[content, lazy_load_column],
-                expand=True, scroll=ft.ScrollMode.AUTO,
+                expand=True,
             )
             page.update()
         except Exception as ex:
