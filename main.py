@@ -450,7 +450,7 @@ def main(page: ft.Page):
                                  italic=True, color=t["muted"]),
             )
 
-        return ft.Column(controls=author_controls, spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
+        return ft.Column(controls=author_controls, spacing=10)
 
     def build_flat_list(books) -> ft.Control:
         """FIX (performance): only builds the first state['visible_count']
@@ -482,7 +482,7 @@ def main(page: ft.Page):
                 )
             )
 
-        return ft.Column(controls=controls, spacing=8, scroll=ft.ScrollMode.AUTO, expand=True)
+        return ft.Column(controls=controls, spacing=8)
 
     def build_books_view() -> ft.Control:
         """Books tab: every book, flat, alphabetical by title."""
@@ -584,7 +584,7 @@ def main(page: ft.Page):
                 )
             )
 
-        return ft.Column(controls=blocks, spacing=10, scroll=ft.ScrollMode.AUTO, expand=True)
+        return ft.Column(controls=blocks, spacing=10)
 
     # ---------------- add / edit dialog ----------------
 
@@ -1061,16 +1061,16 @@ def main(page: ft.Page):
             # just during a fetch. It belongs here, inside the same
             # scrolling Column as the tab's own content, where it can grow
             # or shrink freely without resizing anything else on screen.
-            # FIX: this wrapper must NOT itself be scrollable - `content`
-            # (from build_tree/build_flat_list/build_series_view) is
-            # already its own scroll=AUTO, expand=True Column. Nesting
-            # two scrollable+expand Columns is invalid Flutter layout:
-            # the inner one never gets a real bounded height, so it was
-            # silently rendering only ~1 screenful of cards (e.g. 10 of
-            # 672 books) no matter how many actually matched.
+            # FIX: there is now exactly ONE scrollable region for the
+            # whole body - this wrapping Column. build_tree/build_flat_list/
+            # build_series_view return plain, non-scrolling Columns, so
+            # there's no ambiguity about which level owns scrolling and
+            # no risk of a nested scrollable silently truncating the list
+            # or leaving stale content on screen after a tab switch.
             body_holder.content = ft.Column(
+                key=f"body-{idx}-{query}",
                 controls=[content, lazy_load_column],
-                expand=True,
+                expand=True, scroll=ft.ScrollMode.AUTO,
             )
             page.update()
         except Exception as ex:
