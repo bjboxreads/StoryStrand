@@ -72,16 +72,12 @@ colored left-edge stripes) that made the old design read as distinct.
    on every tab without scrolling.
 """
 
-import re
 import threading
 
 import flet as ft
 
 from models import Library, Book
-from themes import (
-    THEMES, DEFAULT_THEME, theme_names, get_palette,
-    load_settings, save_settings, CUSTOM_THEME_NAME, PALETTE_KEYS, PALETTE_LABELS,
-)
+from themes import THEMES, DEFAULT_THEME, theme_names
 from importers import import_file, SUPPORTED_EXTENSIONS
 from google_books import (
     build_lazy_load_trigger,
@@ -145,13 +141,9 @@ def main(page: ft.Page):
         "Dancing Script": "https://raw.githubusercontent.com/google/fonts/main/ofl/dancingscript/DancingScript%5Bwght%5D.ttf",
     }
 
-       library = Library()
-    # FIX: load the last theme (including a saved custom palette)
-    # instead of always starting on the default theme.
-    _saved_settings = load_settings()
+    library = Library()
     state = {
-        "theme": _saved_settings["theme"],
-        "custom_palette": _saved_settings["custom_palette"] or dict(THEMES[DEFAULT_THEME]),
+        "theme": DEFAULT_THEME,
         "search_query": "",
         "missing_by_series": {},  # series name -> [volume dicts] from Weave My Strand
         "visible_count": PAGE_SIZE,  # FIX: how many cards build_flat_list/build_series_view render before "Load more"
@@ -161,15 +153,8 @@ def main(page: ft.Page):
 
     # ---------------- theming ----------------
 
-       def current_theme() -> dict:
-        """The active palette, whether that's a premade THEMES entry
-        or the user's own "Custom" one - every other function in this
-        file should call this instead of indexing THEMES directly, so
-        Custom just works everywhere without touching each call site."""
-        return get_palette(state["theme"], state.get("custom_palette"))
-
     def apply_theme(theme_name: str):
-        t = get_palette(theme_name, state.get("custom_palette"))
+        t = THEMES[theme_name]
         state["theme"] = theme_name
         page.bgcolor = t["page"]
         page.theme = ft.Theme(
@@ -182,94 +167,6 @@ def main(page: ft.Page):
             font_family="Baskerville",
         )
         page.update()
-        # FIX: remember the choice (including a custom palette) so it's
-        # still applied next time the app opens instead of resetting.
-        save_settings(state["theme"], state.get("custom_palette"))
-
-    def open_theme_editor():
-        """"Make Your Own Palette" dialog: a hex field + live swatch
-        per palette color, with an optional "copy from a premade theme"
-        starting point so the user isn't picking all 9 colors from
-        scratch. Saving switches the active theme to "Custom" and
-        persists it."""
-        t = current_theme()
-        working = dict(state.get("custom_palette") or THEMES[DEFAULT_THEME])
-        swatches: dict[str, ft.Container] = {}
-        fields: dict[str, ft.TextField] = {}
-
-        def make_row(key: str) -> ft.Row:
-            swatch = ft.Container(
-                width=28, height=28, border_radius=6,
-                bgcolor=working.get(key, "#000000"),
-                border=ft.border.all(1, ft.Colors.with_opacity(0.3, ft.Colors.WHITE)),
-            )
-            field = ft.TextField(label=PALETTE_LABELS.get(key, key), value=working.get(key, ""),
-                                  width=160, dense=True)
-
-            def on_change(e):
-                val = (field.value or "").strip()
-                if re.fullmatch(r"#[0-9A-Fa-f]{6}", val):
-                    working[key] = val
-                    swatch.bgcolor = val
-                    field.error_text = None
-                else:
-                    field.error_text = "Use #RRGGBB"
-                page.update()
-
-            field.on_change = on_change
-            swatches[key] = swatch
-            fields[key] = field
-            return ft.Row(controls=[swatch, field], spacing=10)
-
-        rows = [make_row(k) for k in PALETTE_KEYS]
-
-        def copy_from(theme_name: str):
-            if not theme_name:
-                return
-            source = THEMES[theme_name]
-            for k in PALETTE_KEYS:
-                working[k] = source[k]
-                fields[k].value = source[k]
-                fields[k].error_text = None
-                swatches[k].bgcolor = source[k]
-            page.update()
-
-        copy_dropdown = ft.Dropdown(
-            label="Start from a theme",
-            options=[ft.DropdownOption(key=n, text=n) for n in THEMES.keys()],
-            width=210,
-        )
-        copy_button = ft.TextButton("Copy Colors", on_click=lambda e: copy_from(copy_dropdown.value))
-
-        def save(e):
-            if any(f.error_text for f in fields.values()):
-                page.open(ft.SnackBar(ft.Text("Fix the highlighted color(s) before saving.")))
-                page.update()
-                return
-            state["custom_palette"] = dict(working)
-            theme_dropdown.value = CUSTOM_THEME_NAME
-            apply_theme(CUSTOM_THEME_NAME)
-            page.close(dialog)
-            build_header_text()
-            build_tab_row()
-            build_stats_row()
-            refresh_body()
-
-        dialog = ft.AlertDialog(
-            modal=True,
-            bgcolor=t["surface"],
-            title=ft.Text("Make Your Own Palette", color=t["accent"], font_family="Cormorant", size=24),
-            content=ft.Column(
-                controls=[ft.Row(controls=[copy_dropdown, copy_button], wrap=True), ft.Divider(height=1), *rows],
-                tight=True, width=320, height=420, spacing=8, scroll=ft.ScrollMode.AUTO,
-            ),
-            actions=[
-                ft.TextButton("Cancel", on_click=lambda e: page.close(dialog),
-                              style=ft.ButtonStyle(color=t["muted"])),
-                ft.ElevatedButton("Save & Apply", on_click=save, bgcolor=t["accent"], color=t["page"]),
-            ],
-        )
-        page.open(dialog)
 
     # ---------------- FIX (prettier): shared empty-state renderer ----------------
 
@@ -1256,33 +1153,13 @@ def main(page: ft.Page):
 
     theme_dropdown = ft.Dropdown(
         label="Theme",
-        value=state["theme"],
+        value=DEFAULT_THEME,
         options=[ft.DropdownOption(key=name, text=name) for name in theme_names()],
         on_change=lambda e: (
             apply_theme(e.control.value), build_header_text(), build_tab_row(),
             build_stats_row(), refresh_body(),
         ),
         width=200,
-    )
-    # FIX: "Make your own" option alongside the premade themes.
-    customize_theme_button = ft.IconButton(
-        icon=ft.Icons.PALETTE,
-        tooltip="Make your own color scheme",
-        on_click=lambda e: open_theme_editor(),
-    )
-    # FIX: "Make your own" option alongside the premade themes.
-    customize_theme_button = ft.IconButton(
-        icon=ft.Icons.PALETTE,
-        tooltip="Make your own color scheme",
-        on_click=lambda e: open_theme_editor(),
-    )
-    )
-    # FIX: "Make your own" option alongside the premade themes.
-    customize_theme_button = ft.IconButton(
-        icon=ft.Icons.PALETTE,
-        tooltip="Make your own color scheme",
-        on_click=lambda e: open_theme_editor(),
-    )
     )
 
     lazy_load_trigger = build_lazy_load_trigger(
@@ -1346,7 +1223,7 @@ def main(page: ft.Page):
                         spacing=6,
                     ),
                 ),
-                        ft.Row(controls=[ft.Container(expand=True), customize_theme_button, theme_dropdown]),        
+                ft.Row(controls=[ft.Container(expand=True), theme_dropdown]),
                 stats_row,
                 ft.Row(
                     controls=[
@@ -1379,7 +1256,7 @@ def main(page: ft.Page):
         )
     )
 
-    apply_theme(state["theme"])
+    apply_theme(DEFAULT_THEME)
     build_header_text()
     build_stats_row()
     refresh_body()
