@@ -30,6 +30,7 @@ from __future__ import annotations
 import re
 import difflib
 import threading
+import time
 import requests
 import flet as ft
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -594,48 +595,108 @@ def _ghost_card(title: str) -> ft.Container:
 
 # ---------------- the lazy-load trigger ----------------
 
+def _format_eta(seconds: Optional[float]) -> str:
+    if seconds is None:
+        return "estimating time left…"
+    if seconds < 1:
+        return "almost done…"
+    if seconds < 60:
+        return f"about {int(round(seconds))}s left"
+    minutes = int(seconds // 60)
+    secs = int(round(seconds % 60))
+    return f"about {minutes}m {secs}s left"
+
+
+def _build_progress_banner(total: int) -> tuple[ft.Container, Callable[[int, int, Optional[float]], None]]:
+    """A small status banner (progress bar + "N of M — ETA" text) that
+    sits above the ghost cards while a search is running, so the user
+    always knows roughly where they are in the process instead of
+    just watching cards trickle in with no sense of how much is left."""
+    progress_bar = ft.ProgressBar(value=0, width=None)
+    progress_text = ft.Text(f"Searching 0 of {total} book(s)…", size=12, italic=True)
+    banner = ft.Container(
+        padding=10,
+        border_radius=8,
+        bgcolor=ft.Colors.with_opacity(0.1, ft.Colors.WHITE),
+        content=ft.Column(controls=[progress_text, progress_bar], spacing=6),
+    )
+
+    def update(done: int, total: int, eta_seconds: Optional[float]):
+        progress_bar.value = (done / total) if total else None
+        progress_text.value = f"Searching {done} of {total} book(s) — {_format_eta(eta_seconds)}"
+
+    return banner, update
+
+
 def build_lazy_load_trigger(
     page: ft.Page,
     library: Library,
     target_column: ft.Column,
     render_book_card: Callable[[Book], ft.Control],
     on_book_updated: Optional[Callable[[Book], None]] = None,
+    max_workers: int = 4,
 ) -> ft.ElevatedButton:
     """
     Returns an ElevatedButton. On click it:
       1. Finds books missing metadata/covers in the library.
-      2. Immediately renders a 0.6-opacity ghost placeholder for each
-         one inside `target_column`.
-      3. Kicks off a background thread that looks up each missing book
-         one at a time via search_book_metadata (Google Books, then
-         OpenLibrary for whatever's still missing).
+      2. Immediately renders a progress banner plus a 0.6-opacity ghost
+         placeholder for each missing book inside `target_column`.
+      3. Kicks off a background thread that looks up missing books
+         CONCURRENTLY (up to `max_workers` at once, via the same
+         ThreadPoolExecutor pattern as fetch_missing_metadata_parallel)
+         instead of one at a time, so a big batch finishes in roughly
+         1/max_workers of the time.
       4. As each result comes back, swaps that book's ghost placeholder
-         for the real card produced by `render_book_card`.
+         for the real card produced by `render_book_card`, and updates
+         the progress banner with a live "N of M — ETA" readout based
+         on the actual average time per book so far.
+      5. Removes the progress banner once every book has been checked.
     """
 
-    def _run_background_search(missing_books: List[Book], placeholder_index: dict):
-        for book in missing_books:
-            meta = search_book_metadata(book.title, book.author)
-            if meta:
-                apply_metadata(book, meta)
-                library.save()
+    def _run_background_search(missing_books: List[Book], placeholder_index: dict,
+                                banner: ft.Container, update_progress: Callable[[int, int, Optional[float]], None]):
+        total = len(missing_books)
+        start = time.monotonic()
+        done = 0
 
-            def _swap(book=book):
+        def work(book: Book):
+            return book, search_book_metadata(book.title, book.author)
+
+        workers = min(max_workers, max(1, total))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = [executor.submit(work, b) for b in missing_books]
+            for future in as_completed(futures):
+                book, meta = future.result()
+                if meta:
+                    apply_metadata(book, meta)
+                    library.save()
+
                 ghost = placeholder_index.get(book.id)
                 if ghost in target_column.controls:
                     idx = target_column.controls.index(ghost)
                     target_column.controls[idx] = render_book_card(book)
                 if on_book_updated:
                     on_book_updated(book)
+
+                done += 1
+                elapsed = time.monotonic() - start
+                rate = done / elapsed if elapsed > 0 else 0
+                eta = (total - done) / rate if rate > 0 else None
+                update_progress(done, total, eta)
                 page.update()
 
-            _swap()
+        if banner in target_column.controls:
+            target_column.controls.remove(banner)
+        page.update()
 
     def _on_click(e: ft.ControlEvent):
         missing_books = library.books_missing_metadata()
         if not missing_books:
             page.open(ft.SnackBar(ft.Text("Every book already has full metadata.")))
             return
+
+        banner, update_progress = _build_progress_banner(len(missing_books))
+        target_column.controls.append(banner)
 
         placeholder_index = {}
         for book in missing_books:
@@ -646,7 +707,7 @@ def build_lazy_load_trigger(
 
         thread = threading.Thread(
             target=_run_background_search,
-            args=(missing_books, placeholder_index),
+            args=(missing_books, placeholder_index, banner, update_progress),
             daemon=True,
         )
         thread.start()
