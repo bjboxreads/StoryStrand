@@ -21,10 +21,8 @@ jobs:
           pip install flet
           pip install -r requirements.txt
 
-            - name: Build APK
-        run: |
-          flet build apk main.py
-
+      - name: Build APK
+        run: flet build apk main.py
 
       - name: Upload APK to Release
         uses: softprops/action-gh-release@v2
