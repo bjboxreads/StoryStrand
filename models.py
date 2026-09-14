@@ -12,6 +12,7 @@ import json
 import re
 import uuid
 import os
+import threading
 from dataclasses import dataclass, field, asdict
 from typing import Optional, List, Dict, Set, Tuple
 
@@ -69,6 +70,19 @@ class Library:
         self.dismissed_path = dismissed_path
         self.books: Dict[str, Book] = {}
         self.dismissed: Set[Tuple[str, str]] = set()  # (series_lower, normalized_title)
+        # FIX (performance): save() used to write the entire library to
+        # disk synchronously on the UI thread on every single favorite/
+        # read toggle, edit, add, or remove - json.dump()-ing 600+ books
+        # with indent=2 on every click, and blocking the whole app until
+        # the write finished. On slower storage (e.g. Android scoped
+        # storage on a phone) that's exactly what produced the 5-10s
+        # freeze per click. save() now hands the write off to a
+        # background thread. _save_lock serializes the actual disk
+        # writes so two overlapping saves can't corrupt the file, and
+        # _save_version lets a stale in-flight write detect it's been
+        # superseded and skip writing outdated data.
+        self._save_lock = threading.Lock()
+        self._save_version = 0
         self.load()
         self._load_dismissed()
 
@@ -86,8 +100,27 @@ class Library:
             self.books = {}
 
     def save(self) -> None:
-        with open(self.path, "w", encoding="utf-8") as f:
-            json.dump([b.to_dict() for b in self.books.values()], f, indent=2)
+        # FIX (performance): snapshot the data to write *now* (on the
+        # calling/UI thread - this part is cheap, just building a list),
+        # then do the actual slow disk I/O on a background thread so the
+        # UI never blocks on it. self._save_version tags this snapshot;
+        # if a newer save() comes in before this thread gets to write,
+        # the older thread bails instead of overwriting fresher data
+        # with stale data.
+        self._save_version += 1
+        my_version = self._save_version
+        snapshot = [b.to_dict() for b in self.books.values()]
+
+        def _write():
+            with self._save_lock:
+                if my_version != self._save_version:
+                    return  # a newer save() superseded this one - skip
+                tmp_path = self.path + ".tmp"
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(snapshot, f, indent=2)
+                os.replace(tmp_path, self.path)
+
+        threading.Thread(target=_write, daemon=True).start()
 
     def _load_dismissed(self) -> None:
         if os.path.exists(self.dismissed_path):
