@@ -3,7 +3,8 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches: [ main ]
+    tags:
+      - 'v*'
 
 jobs:
   build:
@@ -26,8 +27,9 @@ jobs:
       - name: Build APK
         run: yes | flet build apk --project "StoryStrand" --org com.storystrand.app
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
+      - name: Upload APK to Release
+        uses: softprops/action-gh-release@v2
         with:
-          name: storystrand-apk
-          path: build/apk/*.apk
+          files: build/apk/*.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
