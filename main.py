@@ -97,6 +97,20 @@ def small_pill_radius():
     return ft.border_radius.only(top_left=12, top_right=5, bottom_left=12, bottom_right=5)
 
 
+def soft_shadow(blur=10, opacity=0.18, dy=3):
+    """A gentle drop shadow used throughout the app (book cards, tree
+    nodes, stat tiles) to lift surfaces off the background instead of
+    everything sitting flat. The header keeps its own bigger, bolder
+    shadow (blur=24) as the single boldest accent; this smaller one is
+    for everything else, so the depth reads as a system rather than a
+    one-off effect."""
+    return ft.BoxShadow(
+        blur_radius=blur, spread_radius=0,
+        color=ft.Colors.with_opacity(opacity, ft.Colors.BLACK),
+        offset=ft.Offset(0, dy),
+    )
+
+
 PAGE_SIZE = 60  # FIX: how many book cards to build per "page" in flat/series views
 
 
@@ -114,6 +128,17 @@ def main(page: ft.Page):
     page.fonts = {
         "Cormorant": "https://fonts.gstatic.com/s/cormorantgaramond/v16/co3bmX5slCNuHLi8bLeY9MK7whWMhyjYrEtGhtRXO0k.ttf",
         "Baskerville": "https://fonts.gstatic.com/s/librebaskerville/v14/kmKnZrc3Hgbbcjq75U4uslyuy4kn0qNZaxLBpg.ttf",
+        # FIX (prettier/romantic): two new fonts, used only for the hero
+        # title block so the boldness stays in one place rather than
+        # scattered everywhere. Playfair Display is a high-contrast
+        # display serif for the app title itself - more ornamental and
+        # "romance novel cover"-ish than Cormorant, which stays doing
+        # its existing job on author/series names. Dancing Script is a
+        # flowing handwritten script, used only for the small tagline
+        # underneath - a classic pairing (bold display + soft script)
+        # for a vintage-romantic letterhead feel.
+        "Playfair Display": "https://raw.githubusercontent.com/google/fonts/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf",
+        "Dancing Script": "https://raw.githubusercontent.com/google/fonts/main/ofl/dancingscript/DancingScript%5Bwght%5D.ttf",
     }
 
     library = Library()
@@ -143,6 +168,29 @@ def main(page: ft.Page):
         )
         page.update()
 
+    # ---------------- FIX (prettier): shared empty-state renderer ----------------
+
+    def empty_state(message: str) -> ft.Control:
+        """A softer, more intentional empty state than a single line of
+        italic text - a small accent icon above a Dancing Script line,
+        centered, matching the vintage-romantic voice everywhere else."""
+        t = THEMES[state["theme"]]
+        return ft.Container(
+            padding=36,
+            alignment=ft.alignment.center,
+            content=ft.Column(
+                controls=[
+                    ft.Icon(ft.Icons.AUTO_STORIES, size=30, color=t["accent"]),
+                    ft.Text(
+                        message, size=20, font_family="Dancing Script",
+                        color=t["muted"], text_align=ft.TextAlign.CENTER,
+                    ),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=8,
+            ),
+        )
+
     # ---------------- shared card renderer (also used by ghost loader) ----------------
 
     def render_book_card(book: Book) -> ft.Control:
@@ -165,13 +213,19 @@ def main(page: ft.Page):
                 page.close(confirm_dialog)
                 refresh_all()
 
+            # FIX (prettier): themed to match the app instead of a plain
+            # default white dialog - same bgcolor/accent/muted pattern
+            # already used by the metadata-fetch dialogs below.
             confirm_dialog = ft.AlertDialog(
                 modal=True,
-                title=ft.Text("Remove book?"),
-                content=ft.Text(f'Remove "{book.title}" from your shelf?'),
+                bgcolor=t["surface"],
+                title=ft.Text("Remove book?", color=t["accent"], font_family="Cormorant", size=22),
+                content=ft.Text(f'Remove "{book.title}" from your shelf?', color=t["text"]),
                 actions=[
-                    ft.TextButton("Cancel", on_click=lambda ev: page.close(confirm_dialog)),
-                    ft.TextButton("Remove", on_click=confirm_remove),
+                    ft.TextButton("Cancel", on_click=lambda ev: page.close(confirm_dialog),
+                                  style=ft.ButtonStyle(color=t["muted"])),
+                    ft.TextButton("Remove", on_click=confirm_remove,
+                                  style=ft.ButtonStyle(color=t["accent2"])),
                 ],
             )
             page.open(confirm_dialog)
@@ -214,6 +268,7 @@ def main(page: ft.Page):
             border_radius=pill_radius(),
             bgcolor=t["surface"],
             border=ft.border.only(left=ft.BorderSide(4, t[status_stripe_key(book)])),
+            shadow=soft_shadow(),  # FIX (prettier): lifts each book card off the page instead of sitting flat
             content=ft.Row(
                 controls=[
                     cover,
@@ -352,6 +407,7 @@ def main(page: ft.Page):
                     padding=ft.padding.symmetric(horizontal=10, vertical=6),
                     border_radius=small_pill_radius(),
                     bgcolor=t["surface2"],
+                    shadow=soft_shadow(blur=6, opacity=0.15, dy=2),  # FIX (prettier): subtle lift on tree nodes
                     content=ft.Row(
                         controls=[
                             ft.Icon(branch_icon, size=16, color=t["accent"]),
@@ -429,6 +485,7 @@ def main(page: ft.Page):
             author_controls.append(
                 ft.Container(
                     padding=10, border_radius=pill_radius(), bgcolor=t["card"],
+                    shadow=soft_shadow(),  # FIX (prettier): lifts each author box off the page
                     content=ft.Column(
                         controls=[
                             author_header,
@@ -444,11 +501,7 @@ def main(page: ft.Page):
             )
 
         if not author_controls:
-            return ft.Container(
-                padding=30,
-                content=ft.Text("No books yet — import a file or add one manually.",
-                                 italic=True, color=t["muted"]),
-            )
+            return empty_state("No books yet — import a file or add one manually.")
 
         return ft.Column(controls=author_controls, spacing=10)
 
@@ -460,8 +513,7 @@ def main(page: ft.Page):
         keystroke. A "Load more" button bumps visible_count and asks for
         another refresh_body() rather than eagerly building the rest."""
         if not books:
-            t = THEMES[state["theme"]]
-            return ft.Container(padding=30, content=ft.Text("Nothing here yet.", italic=True, color=t["muted"]))
+            return empty_state("Nothing here yet.")
 
         t = THEMES[state["theme"]]
         visible_count = min(state["visible_count"], len(books))
@@ -542,7 +594,7 @@ def main(page: ft.Page):
             by_series.setdefault(series_name, [])
 
         if not by_series:
-            return ft.Container(padding=30, content=ft.Text("No series tracked yet.", italic=True, color=t["muted"]))
+            return empty_state("No series tracked yet.")
 
         blocks = []
         rendered_books = 0
@@ -562,6 +614,7 @@ def main(page: ft.Page):
             blocks.append(
                 ft.Container(
                     padding=10, border_radius=pill_radius(), bgcolor=t["surface"],
+                    shadow=soft_shadow(),  # FIX (prettier): lifts each series block off the page
                     content=ft.Column(controls=[
                         ft.Text(series_name, size=15, weight=ft.FontWeight.BOLD,
                                 color=t["text"], font_family="Cormorant"),
@@ -591,6 +644,7 @@ def main(page: ft.Page):
     def open_book_dialog(book: Book = None, prefill: dict = None):
         editing = book is not None
         prefill = prefill or {}
+        t = THEMES[state["theme"]]  # FIX (prettier): theme the dialog itself, see below
 
         def initial(field_name, default=""):
             if editing:
@@ -664,9 +718,17 @@ def main(page: ft.Page):
             page.close(dialog)
             refresh_all()
 
+        # FIX (prettier): themed to match the app - bgcolor, an accent
+        # Cormorant title, and a filled Save button in the theme's
+        # accent color - instead of a plain default white dialog with
+        # default-colored buttons that clashed with every dark palette.
         dialog = ft.AlertDialog(
             modal=True,
-            title=ft.Text("Edit Book" if editing else "Add Book Manually"),
+            bgcolor=t["surface"],
+            title=ft.Text(
+                "Edit Book" if editing else "Add Book Manually",
+                color=t["accent"], font_family="Cormorant", size=24,
+            ),
             content=ft.Column(
                 controls=[
                     title_f, author_f, series_f, series_idx_f, genre_f, cover_f,
@@ -675,8 +737,10 @@ def main(page: ft.Page):
                 tight=True, width=380, scroll=ft.ScrollMode.AUTO, height=460,
             ),
             actions=[
-                ft.TextButton("Cancel", on_click=lambda e: page.close(dialog)),
-                ft.FilledButton("Save", on_click=save),
+                ft.TextButton("Cancel", on_click=lambda e: page.close(dialog),
+                              style=ft.ButtonStyle(color=t["muted"])),
+                ft.FilledButton("Save", on_click=save,
+                                style=ft.ButtonStyle(bgcolor=t["accent"], color=t["page"])),
             ],
         )
         page.open(dialog)
@@ -979,6 +1043,7 @@ def main(page: ft.Page):
                 bgcolor=t["card"],
                 border=ft.border.all(1, t["accent"]),
                 border_radius=small_pill_radius(),
+                shadow=soft_shadow(blur=6, opacity=0.15, dy=2),  # FIX (prettier): subtle lift on stat tiles
                 padding=ft.padding.symmetric(horizontal=6, vertical=12),
                 alignment=ft.alignment.center,
                 width=106,
@@ -1106,15 +1171,24 @@ def main(page: ft.Page):
     )
     lazy_load_trigger_row = ft.Row(controls=[lazy_load_trigger, weave_button], wrap=True)
 
+    # FIX (prettier/romantic): swapped from Cormorant to Playfair Display
+    # for the title itself - a bolder, higher-contrast display serif that
+    # reads more like a book-cover title. Dropped the letter-spacing
+    # trick that was standing in for personality now that the font
+    # carries its own.
     header_title = ft.Text(
-        "StoryStrand", size=40, weight=ft.FontWeight.BOLD,
-        font_family="Cormorant", text_align=ft.TextAlign.CENTER,
-        style=ft.TextStyle(letter_spacing=2),  # FIX: a touch of letter-spacing reads less "default app title"
+        "StoryStrand", size=44, weight=ft.FontWeight.BOLD,
+        font_family="Playfair Display", text_align=ft.TextAlign.CENTER,
+        style=ft.TextStyle(letter_spacing=0.5),
     )
-    # FIX: corrected tagline wording per request.
+    # FIX (prettier/romantic): tagline moved from italic Baskerville to
+    # Dancing Script, a flowing handwritten script - sized up since
+    # script faces read as fussy/illegible small. Paired with the bold
+    # Playfair title above, this is the classic "bold headline + soft
+    # handwritten note underneath" letterhead look.
     header_tagline = ft.Text(
-        "Where every story finds its thread", italic=True,
-        size=13, font_family="Baskerville", text_align=ft.TextAlign.CENTER,
+        "Where every story finds its thread",
+        size=22, font_family="Dancing Script", text_align=ft.TextAlign.CENTER,
     )
     # FIX: "prettier" -> "romantic": swapped the plain book-icon divider
     # for a small heart-flourish glyph (a classic vintage-romance motif),
