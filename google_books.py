@@ -28,6 +28,13 @@ Metadata lookups against Google Books AND OpenLibrary, plus three features:
      was making "Find Missing Book Info" take 15-20 minutes for a few
      hundred books.
 
+  5. FIX: build_series_discovery_trigger's series-checking loop now
+     also runs concurrently (same 4-worker pattern) instead of
+     checking one series at a time -- each series check does TWO
+     blocking network calls (Google Books + OpenLibrary), so checking
+     672 series one at a time was the "Weave My Strand" equivalent of
+     the same slowdown fixed in #4.
+
 Both/all are self-contained here - nothing in this file rewrites the
 rest of main.py, it only returns ready-to-place ft.Control objects or
 plain data.
@@ -478,7 +485,16 @@ def build_series_discovery_trigger(
     positive) and calls on_results(missing_by_series) once done, where
     missing_by_series maps series name -> list of dicts from
     find_missing_series_volumes (only series with at least one hit are
-    included)."""
+    included).
+
+    FIX: series are now checked CONCURRENTLY (up to 4 at a time, same
+    pattern as fetch_missing_metadata_parallel / build_lazy_load_trigger)
+    instead of one at a time. Each series check does two blocking
+    network calls (Google Books + OpenLibrary), so checking hundreds of
+    series sequentially was the same 15-20-minute-style slowdown that
+    was already fixed for "Find Missing Book Info" -- just not yet
+    applied here.
+    """
 
     def _run(series_names: List[str]):
         owned_by_series: dict = {}
@@ -488,14 +504,20 @@ def build_series_discovery_trigger(
                 owned_by_series.setdefault(book.series, []).append(book.title)
                 author_by_series.setdefault(book.series, book.author)
 
-        missing_by_series = {}
-        for name in series_names:
+        def work(name: str):
             found = find_missing_series_volumes(
                 name, owned_by_series.get(name, []), author_by_series.get(name, "")
             )
             found = [v for v in found if not library.is_missing_dismissed(name, v["title"])]
-            if found:
-                missing_by_series[name] = found
+            return name, found
+
+        missing_by_series = {}
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            futures = [executor.submit(work, name) for name in series_names]
+            for future in as_completed(futures):
+                name, found = future.result()
+                if found:
+                    missing_by_series[name] = found
 
         on_results(missing_by_series)
 
