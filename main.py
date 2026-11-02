@@ -3,73 +3,25 @@ StoryStrand - main.py
 A whimsical, vintage-romantic book organizer built with Flet.
 
 Structure:
-  - Left/top: theme picker + search bar + import/add/discover buttons
+  - Header: title, theme picker, stats tiles, search bar, import/add buttons
   - Tabs: Authors | Series | Books | Read | Unread | Favorites
   - Authors tab renders a collapsible tree: Author -> branch -> books.
     A branch is either a series (grouping every book in that series)
-    or a single standalone book (its own branch), as requested.
+    or a single standalone book (its own branch).
   - Books tab is a flat, alphabetical view of every book in the library.
-  - "Find Missing Book Info" button lazy-loads Google Books metadata
-    for any book still missing a cover/page count, rendering 0.6-opacity
-    ghost placeholders while it works (see google_books.py).
-  - "Weave My Strand" button checks each series against Google Books
-    and surfaces volumes that don't appear to be on the shelf yet as
-    ghost cards inside the Series tab, with a one-click "Add to Shelf".
+  - "Find Missing Book Info" lazy-loads Google Books metadata with
+    0.6-opacity ghost placeholders (see google_books.py).
+  - "Weave My Strand" checks each series against Google Books and
+    surfaces volumes that aren't on the shelf yet as ghost cards.
 
-This file wires everything together but keeps each concern (data,
-importing, theming, Google Books) in its own module so you can hand
-any one piece to me later and say "only touch this file."
-
-THEMING: colors/fonts are ported from the old app's palette system.
-See themes.py for the palette dict and pill_radius()/status_stripe_color()
-below for the two signature visual touches (asymmetric card corners,
-colored left-edge stripes) that made the old design read as distinct.
-
---- FIXES APPLIED (see comments marked "FIX:") ---
-1. FIX: wrapped the root control in ft.SafeArea so the header no longer
-   renders underneath the phone's status bar / notch.
-2. FIX: build_header_text() and build_stats_row() now call page.update()
-   themselves instead of relying on a later, unrelated page.update()
-   call to flush their changes to the client.
-3. FIX: importing a file now offers to fetch metadata (cover, genre,
-   description, publisher info) for the newly-added books right away,
-   using a concurrent (4-worker) fetch with a visible progress dialog -
-   matching the old app's Import-tab checkboxes + "Looked up X of Y..."
-   status, instead of new imports sitting metadata-less until the user
-   taps "Find Missing Book Info" themselves.
-4. FIX: build_tree() (Authors tab) restyled to look like a dropping
-   family tree - rounded box "nodes" for each author/series, connected
-   by a vertical trunk line down to their children, each child prefixed
-   with a small "└─" elbow. Still collapsible by default so this stays
-   usable at 672+ authors instead of trying to lay everything out at
-   once like a fixed genealogy chart would.
-5. FIX (performance): build_tree() previously called render_book_card()
-   for every book in every branch, for every author, immediately on
-   every call - once at startup and again on every tab switch, search
-   keystroke, and theme change. Setting the resulting column's
-   visible=False hid it but did NOT avoid building it, so the app was
-   still constructing 672+ full widget trees (image + 4 icon buttons +
-   text) synchronously on the UI thread every time, which is what made
-   the app feel "slow and glitchy" and made search/other tabs appear to
-   hang - they were just queued behind that rebuild, not broken. Book
-   cards for a branch are now only built the first time that branch is
-   expanded (and cached on the column after that), so build_tree()
-   itself only ever constructs cheap header/node widgets up front.
-6. FIX (performance): build_flat_list() (Books/Read/Unread/Favorites)
-   and build_series_view() (Series tab) previously rendered a full
-   render_book_card() for every matching book, all at once, on every
-   tab switch and every search keystroke - the same eager-build
-   problem #5 fixed for Authors, just not fixed for these other tabs
-   yet. Both now render in batches of PAGE_SIZE with a "Load more"
-   button, so opening Books with 672 titles (or typing in search)
-   only ever builds a first page of cards instead of all of them.
-7. FIX (discoverability): "Find Missing Book Info" and "Weave My
-   Strand" were appended to the END of the scrollable tab content,
-   after every book card on that tab - on a tab with hundreds of
-   books, that put them below a very long (and, pre-fix #6, very
-   laggy) scroll, which read as "the button is gone." They're now
-   part of the fixed header, next to Import/Add, so they're visible
-   on every tab without scrolling.
+PERFORMANCE NOTES (latest round):
+  - soft_shadow() now returns None. Blurred drop shadows on hundreds of
+    cards/boxes were a major source of lag on phones.
+  - build_tree() (Authors tab) now builds an author's branch boxes only
+    when that author is expanded, and shows authors a page at a time
+    with a "Load more authors" button, instead of building every
+    author's whole subtree on every refresh.
+  - Book cards in flat/series views already load in pages (PAGE_SIZE).
 """
 
 import threading
@@ -98,27 +50,19 @@ def small_pill_radius():
 
 
 def soft_shadow(blur=10, opacity=0.18, dy=3):
-    """A gentle drop shadow used throughout the app (book cards, tree
-    nodes, stat tiles) to lift surfaces off the background instead of
-    everything sitting flat. The header keeps its own bigger, bolder
-    shadow (blur=24) as the single boldest accent; this smaller one is
-    for everything else, so the depth reads as a system rather than a
-    one-off effect."""
-    return ft.BoxShadow(
-        blur_radius=blur, spread_radius=0,
-        color=ft.Colors.with_opacity(opacity, ft.Colors.BLACK),
-        offset=ft.Offset(0, dy),
-    )
+    """PERFORMANCE: shadows are turned off. Blurred shadows on every
+    card, tree box and stat tile made tab/theme switches laggy on
+    phones. Returning None means 'no shadow' everywhere this is used.
+    (The single big title shadow in the header is separate and kept.)"""
+    return None
 
 
-PAGE_SIZE = 60  # FIX: how many book cards to build per "page" in flat/series views
+PAGE_SIZE = 60  # how many cards/authors to build per "page" before "Load more"
 
 
 def status_stripe_key(book: Book) -> str:
-    """Returns a THEME key ('accent'/'accent2'/'muted') - caller
-    resolves it against the active palette. This app's Book model
-    only tracks read/unread (no "Currently Reading" state), so it
-    maps to two of the old app's three stripe colors."""
+    """Returns a THEME key ('accent2'/'muted') - caller resolves it
+    against the active palette."""
     return "accent2" if book.read else "muted"
 
 
@@ -128,15 +72,6 @@ def main(page: ft.Page):
     page.fonts = {
         "Cormorant": "https://fonts.gstatic.com/s/cormorantgaramond/v16/co3bmX5slCNuHLi8bLeY9MK7whWMhyjYrEtGhtRXO0k.ttf",
         "Baskerville": "https://fonts.gstatic.com/s/librebaskerville/v14/kmKnZrc3Hgbbcjq75U4uslyuy4kn0qNZaxLBpg.ttf",
-        # FIX (prettier/romantic): two new fonts, used only for the hero
-        # title block so the boldness stays in one place rather than
-        # scattered everywhere. Playfair Display is a high-contrast
-        # display serif for the app title itself - more ornamental and
-        # "romance novel cover"-ish than Cormorant, which stays doing
-        # its existing job on author/series names. Dancing Script is a
-        # flowing handwritten script, used only for the small tagline
-        # underneath - a classic pairing (bold display + soft script)
-        # for a vintage-romantic letterhead feel.
         "Playfair Display": "https://raw.githubusercontent.com/google/fonts/main/ofl/playfairdisplay/PlayfairDisplay%5Bwght%5D.ttf",
         "Dancing Script": "https://raw.githubusercontent.com/google/fonts/main/ofl/dancingscript/DancingScript%5Bwght%5D.ttf",
     }
@@ -146,9 +81,9 @@ def main(page: ft.Page):
         "theme": DEFAULT_THEME,
         "search_query": "",
         "missing_by_series": {},  # series name -> [volume dicts] from Weave My Strand
-        "visible_count": PAGE_SIZE,  # FIX: how many cards build_flat_list/build_series_view render before "Load more"
-        "expanded_authors": set(),   # FIX: authors currently expanded in the Authors tab tree, survives refresh_body()
-        "expanded_branches": set(),  # FIX: (author, branch_key) pairs currently expanded, survives refresh_body()
+        "visible_count": PAGE_SIZE,  # how many cards/authors render before "Load more"
+        "expanded_authors": set(),   # authors currently expanded in the Authors tab tree
+        "expanded_branches": set(),  # (author, branch_key) pairs currently expanded
     }
 
     # ---------------- theming ----------------
@@ -168,12 +103,9 @@ def main(page: ft.Page):
         )
         page.update()
 
-    # ---------------- FIX (prettier): shared empty-state renderer ----------------
+    # ---------------- shared empty-state renderer ----------------
 
     def empty_state(message: str) -> ft.Control:
-        """A softer, more intentional empty state than a single line of
-        italic text - a small accent icon above a Dancing Script line,
-        centered, matching the vintage-romantic voice everywhere else."""
         t = THEMES[state["theme"]]
         return ft.Container(
             padding=36,
@@ -213,9 +145,6 @@ def main(page: ft.Page):
                 page.close(confirm_dialog)
                 refresh_all()
 
-            # FIX (prettier): themed to match the app instead of a plain
-            # default white dialog - same bgcolor/accent/muted pattern
-            # already used by the metadata-fetch dialogs below.
             confirm_dialog = ft.AlertDialog(
                 modal=True,
                 bgcolor=t["surface"],
@@ -235,10 +164,6 @@ def main(page: ft.Page):
             cover = ft.Container(
                 width=44, height=64, border_radius=cover_radius,
                 clip_behavior=ft.ClipBehavior.ANTI_ALIAS,
-                # FIX: was ft.BoxFit.COVER, which doesn't exist on this
-                # Flet version and crashed rendering for every book that
-                # had a cover_url - i.e. every tab except Authors (no
-                # branches expanded yet) and Favorites (empty list).
                 content=ft.Image(src=book.cover_url, width=44, height=64, fit=ft.ImageFit.COVER),
             )
         else:
@@ -268,7 +193,7 @@ def main(page: ft.Page):
             border_radius=pill_radius(),
             bgcolor=t["surface"],
             border=ft.border.only(left=ft.BorderSide(4, t[status_stripe_key(book)])),
-            shadow=soft_shadow(),  # FIX (prettier): lifts each book card off the page instead of sitting flat
+            shadow=soft_shadow(),
             content=ft.Row(
                 controls=[
                     cover,
@@ -302,79 +227,57 @@ def main(page: ft.Page):
     # ---------------- collapsible tree (Authors tab) ----------------
 
     def build_tree(filtered_ids=None) -> ft.Control:
-        """FIX: styled as a dropping family-tree — each author/series is a
-        rounded 'node' box, and its children hang directly beneath it,
-        indented and marked by a left trunk line, the way a family-tree
-        chart branches from a parent box down to its children. Still
-        fully collapsible (author/series start closed) so this stays
-        usable with 672+ authors instead of trying to lay everything out
-        at once like a fixed-size chart would.
+        """Authors tab as a collapsible family-tree.
 
-        FIX: this deliberately avoids wrapping any child in a Row +
-        expand=True Container. An earlier version did that for the
-        trunk-line + elbow-connector look, and it caused book titles to
-        render squeezed into a couple of pixels of width (wrapping one
-        or two characters per line): a Row's flexible/expand child needs
-        a parent with a definite bounded width to flex within, and
-        nested this many levels deep inside plain Columns, that bound
-        wasn't reliably there. Plain Column-in-Column nesting (as used
-        below, and as the original working version of this app used)
-        doesn't have that problem, so the indent + left border here
-        stands in for the elbow/trunk-line visual instead.
+        PERFORMANCE: only builds what's visible.
+          - Authors are shown PAGE_SIZE at a time with a "Load more
+            authors" button.
+          - An author's branch boxes are only built once that author is
+            expanded.
+          - A branch's book cards are only built once that branch is
+            expanded.
+        Which authors/branches are open is tracked in
+        state["expanded_authors"] / state["expanded_branches"], so a
+        refresh (e.g. tapping a book's favorite star) keeps them open.
 
-        FIX (performance): book cards for a branch are now only built
-        the first time that branch is expanded, not upfront for every
-        branch of every author on every call to build_tree(). This is
-        what fixes the "slow and glitchy" tab/search lag - previously
-        render_book_card() ran for all 672+ books on every single
-        build_tree() call, whether or not any branch was even expanded
-        to show them.
-
-        FIX (state persistence): which authors/branches are expanded is
-        now tracked in state["expanded_authors"] / state["expanded_branches"]
-        instead of living only on the Column objects built here. Every
-        call to build_tree() constructs brand-new Column instances, so
-        the old approach (col.visible flipped by the toggle) reset to
-        fully collapsed on every single refresh - meaning any tap on a
-        book's favorite/read/edit/delete icon (which calls refresh_all())
-        silently collapsed the entire tree back shut, since a whole new
-        set of visible=False columns replaced the ones you had open.
-        That's what made book taps look like "nothing happens." Reading
-        expanded state from `state` on every build instead means a
-        refresh re-expands exactly what was open before.
+        NOTE: this deliberately avoids wrapping children in a Row +
+        expand=True Container (that squeezed titles to a few pixels).
+        Plain Column-in-Column nesting with an indent + left border is
+        used instead.
         """
         t = THEMES[state["theme"]]
         tree_data = library.tree()
-        author_controls = []
 
+        # Cheap pass (no widgets): which authors have anything to show?
+        authors_to_show = []
         for author, branches in tree_data.items():
-            branch_controls = []
+            kept = {}
             for branch_key, books in branches.items():
                 if filtered_ids is not None:
                     books = [b for b in books if b.id in filtered_ids]
-                    if not books:
-                        continue
+                if books:
+                    kept[branch_key] = books
+            if kept:
+                authors_to_show.append((author, kept))
 
+        if not authors_to_show:
+            return empty_state("No books yet — import a file or add one manually.")
+
+        def build_branch_controls(author, kept):
+            branch_controls = []
+            for branch_key, books in kept.items():
                 is_series = branch_key.startswith("series::")
                 branch_label = branch_key.split("::", 1)[1] if is_series else books[0].title
                 branch_icon = ft.Icons.COLLECTIONS_BOOKMARK if is_series else ft.Icons.BOOKMARK_BORDER
 
                 if is_series:
                     # Chronological reading order within the series -
-                    # books with no series_index sort last rather than
-                    # colliding at the front with #1.
+                    # books with no series_index sort last.
                     books = sorted(books, key=lambda b: (b.series_index is None, b.series_index or 0))
 
-                # FIX: state key survives across build_tree() calls even
-                # though the Column objects themselves don't.
                 branch_state_key = (author, branch_key)
                 branch_expanded = branch_state_key in state["expanded_branches"]
 
-                # FIX (performance + state persistence): only build cards
-                # for branches that are actually expanded right now - not
-                # all of them (perf), and re-derived from `state` on every
-                # call rather than relying on a cache that gets thrown
-                # away the moment build_tree() runs again (persistence).
                 book_column = ft.Column(
                     controls=[render_book_card(b) for b in books] if branch_expanded else [],
                     spacing=6,
@@ -400,14 +303,11 @@ def main(page: ft.Page):
                             page.update()
                     return _toggle
 
-                # FIX: branch header is now a rounded box ("node"),
-                # matching the boxed-ancestor look of a family-tree
-                # chart, rather than a plain unboxed row of text.
                 branch_node = ft.Container(
                     padding=ft.padding.symmetric(horizontal=10, vertical=6),
                     border_radius=small_pill_radius(),
                     bgcolor=t["surface2"],
-                    shadow=soft_shadow(blur=6, opacity=0.15, dy=2),  # FIX (prettier): subtle lift on tree nodes
+                    shadow=soft_shadow(blur=6, opacity=0.15, dy=2),
                     content=ft.Row(
                         controls=[
                             ft.Icon(branch_icon, size=16, color=t["accent"]),
@@ -424,9 +324,6 @@ def main(page: ft.Page):
                         ],
                     ),
                 )
-                # FIX: children hang directly under the node box, indented
-                # and marked with a left trunk line - plain Column nesting,
-                # no Row/expand involved.
                 branch_controls.append(
                     ft.Column(
                         controls=[
@@ -440,15 +337,21 @@ def main(page: ft.Page):
                         spacing=4,
                     )
                 )
+            return branch_controls
 
-            if not branch_controls:
-                continue
+        visible_authors = authors_to_show[:state["visible_count"]]
+        remaining = len(authors_to_show) - len(visible_authors)
 
-            # FIX: same persistence approach for the author-level toggle.
+        author_controls = []
+        for author, kept in visible_authors:
             author_expanded = author in state["expanded_authors"]
-            author_column = ft.Column(controls=branch_controls, spacing=10, visible=author_expanded)
+            author_column = ft.Column(
+                controls=build_branch_controls(author, kept) if author_expanded else [],
+                spacing=10,
+                visible=author_expanded,
+            )
 
-            def make_author_toggle(col=author_column, akey=author):
+            def make_author_toggle(col=author_column, akey=author, akept=kept):
                 def _toggle(e):
                     try:
                         if akey in state["expanded_authors"]:
@@ -456,6 +359,7 @@ def main(page: ft.Page):
                             col.visible = False
                         else:
                             state["expanded_authors"].add(akey)
+                            col.controls = build_branch_controls(akey, akept)
                             col.visible = True
                         e.control.icon = ft.Icons.EXPAND_LESS if col.visible else ft.Icons.EXPAND_MORE
                         page.update()
@@ -466,7 +370,7 @@ def main(page: ft.Page):
                         page.update()
                 return _toggle
 
-            total_books = sum(len(v) for v in branches.values())
+            total_books = sum(len(v) for v in kept.values())
             author_header = ft.Row(
                 controls=[
                     ft.Icon(ft.Icons.PERSON_OUTLINE, color=t["accent"]),
@@ -480,12 +384,10 @@ def main(page: ft.Page):
                     ),
                 ],
             )
-            # FIX: author node also has its branch boxes hanging directly
-            # beneath it, indented + left-lined, same plain-Column nesting.
             author_controls.append(
                 ft.Container(
                     padding=10, border_radius=pill_radius(), bgcolor=t["card"],
-                    shadow=soft_shadow(),  # FIX (prettier): lifts each author box off the page
+                    shadow=soft_shadow(),
                     content=ft.Column(
                         controls=[
                             author_header,
@@ -500,18 +402,25 @@ def main(page: ft.Page):
                 )
             )
 
-        if not author_controls:
-            return empty_state("No books yet — import a file or add one manually.")
+        if remaining > 0:
+            def _load_more_authors(e):
+                state["visible_count"] += PAGE_SIZE
+                refresh_body()
+
+            author_controls.append(
+                ft.OutlinedButton(
+                    f"Load more authors ({remaining} remaining)",
+                    icon=ft.Icons.EXPAND_MORE,
+                    on_click=_load_more_authors,
+                    style=ft.ButtonStyle(color=t["accent"]),
+                )
+            )
 
         return ft.Column(controls=author_controls, spacing=10)
 
     def build_flat_list(books) -> ft.Control:
-        """FIX (performance): only builds the first state['visible_count']
-        cards instead of a render_book_card() for every book in the list
-        up front - on Books/Read/Unread/Favorites that used to mean
-        building all 672(ish) cards on every tab switch or search
-        keystroke. A "Load more" button bumps visible_count and asks for
-        another refresh_body() rather than eagerly building the rest."""
+        """Only builds the first state['visible_count'] cards; a "Load
+        more" button bumps visible_count and refreshes."""
         if not books:
             return empty_state("Nothing here yet.")
 
@@ -574,12 +483,9 @@ def main(page: ft.Page):
         refresh_all()
 
     def build_series_view() -> ft.Control:
-        """FIX (performance): renders series blocks (and the book cards
-        inside them) only until state['visible_count'] total books have
-        been rendered, then stops and offers "Load more series" instead
-        of building every book in every series up front - previously
-        this built a render_book_card() for every owned book in every
-        series, all at once, on every tab switch and search keystroke."""
+        """Renders series blocks (and the book cards inside them) only
+        until state['visible_count'] total books have been rendered,
+        then offers "Load more series"."""
         t = THEMES[state["theme"]]
         by_series = {}
         for b in library.all_books():
@@ -587,9 +493,7 @@ def main(page: ft.Page):
                 by_series.setdefault(b.series, []).append(b)
 
         # A series can show up here purely from a Weave My Strand
-        # discovery even before the user owns any book in it yet -
-        # otherwise a freshly-discovered series with zero owned books
-        # would have nowhere to render its ghost cards.
+        # discovery even before the user owns any book in it yet.
         for series_name in state["missing_by_series"]:
             by_series.setdefault(series_name, [])
 
@@ -614,7 +518,7 @@ def main(page: ft.Page):
             blocks.append(
                 ft.Container(
                     padding=10, border_radius=pill_radius(), bgcolor=t["surface"],
-                    shadow=soft_shadow(),  # FIX (prettier): lifts each series block off the page
+                    shadow=soft_shadow(),
                     content=ft.Column(controls=[
                         ft.Text(series_name, size=15, weight=ft.FontWeight.BOLD,
                                 color=t["text"], font_family="Cormorant"),
@@ -644,7 +548,7 @@ def main(page: ft.Page):
     def open_book_dialog(book: Book = None, prefill: dict = None):
         editing = book is not None
         prefill = prefill or {}
-        t = THEMES[state["theme"]]  # FIX (prettier): theme the dialog itself, see below
+        t = THEMES[state["theme"]]
 
         def initial(field_name, default=""):
             if editing:
@@ -718,10 +622,6 @@ def main(page: ft.Page):
             page.close(dialog)
             refresh_all()
 
-        # FIX (prettier): themed to match the app - bgcolor, an accent
-        # Cormorant title, and a filled Save button in the theme's
-        # accent color - instead of a plain default white dialog with
-        # default-colored buttons that clashed with every dark palette.
         dialog = ft.AlertDialog(
             modal=True,
             bgcolor=t["surface"],
@@ -755,11 +655,8 @@ def main(page: ft.Page):
             return
         files = list(e.files)
 
-        # Parsing (especially .doc/.pdf heuristic extraction) can take
-        # a real moment on a big file - doing it inline here used to
-        # freeze the UI thread for that whole time. Running it on a
-        # background thread keeps the app responsive; refresh_all()
-        # and the result snackbar only fire once parsing is done.
+        # Parsing can take a real moment on a big file, so it runs on a
+        # background thread to keep the app responsive.
         page.open(ft.SnackBar(ft.Text(f"Importing {len(files)} file(s)…")))
         page.update()
 
@@ -783,9 +680,7 @@ def main(page: ft.Page):
             refresh_all()
             page.open(ft.SnackBar(ft.Text(msg)))
             page.update()
-            # FIX: offer to fetch metadata for the books that just came
-            # in, instead of leaving them metadata-less until the user
-            # remembers to tap "Find Missing Book Info" later.
+            # Offer to fetch metadata for the books that just came in.
             if newly_added:
                 open_fetch_metadata_dialog(newly_added)
 
@@ -799,15 +694,12 @@ def main(page: ft.Page):
             allowed_extensions=[ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS],
         )
 
-    # ---------------- FIX: post-import metadata fetch ----------------
+    # ---------------- post-import metadata fetch ----------------
 
     def open_fetch_metadata_dialog(new_books: list[Book]):
-        """FIX: shown right after an import finishes. Mirrors the old
-        app's Import-tab checkboxes (all checked by default) so
-        fetching metadata for new books stays one click, but the user
-        can still skip it or turn off individual fields. FIX: restyled
-        to match the app's theme and voice instead of a plain default
-        dialog with generic checkbox labels."""
+        """Shown right after an import finishes. Checkboxes are all on
+        by default so fetching metadata for new books stays one click,
+        but the user can skip it or turn off individual fields."""
         t = THEMES[state["theme"]]
         count = len(new_books)
         cover_cb = ft.Checkbox(label="🖼️  Cover art", value=True)
@@ -863,12 +755,8 @@ def main(page: ft.Page):
 
     def run_metadata_fetch(new_books: list[Book], want_cover, want_description,
                             want_genre, want_pubinfo):
-        """FIX: runs the concurrent (4-worker) fetch from google_books.py
-        against the newly imported books, with a live progress dialog -
-        instead of either blocking the UI or leaving the user with no
-        sense of whether it's working. FIX: restyled to match the app's
-        theme and voice ("Weaving new threads...") instead of a plain
-        default "Fetching metadata" dialog with a bare progress bar."""
+        """Runs the concurrent (4-worker) fetch from google_books.py
+        against the newly imported books, with a live progress dialog."""
         t = THEMES[state["theme"]]
         progress_text = ft.Text("Casting a line to Google Books & OpenLibrary…",
                                  color=t["muted"], size=12, italic=True)
@@ -943,7 +831,6 @@ def main(page: ft.Page):
     )
 
     body_holder = ft.Container(expand=True)
-    # FIX: no fixed height here anymore - see lazy_load_column note below.
     lazy_load_column = ft.Column(spacing=6)  # ghost placeholders render here
 
     TAB_LABELS = ["Authors", "Series", "Books", "Read", "Unread", "Favorites"]
@@ -954,9 +841,8 @@ def main(page: ft.Page):
 
     def build_tab_row():
         """A small self-contained tab selector, built from plain
-        Containers rather than ft.Tabs/TabBar - Flet's Tabs API has
-        changed shape across releases, so this avoids main.py breaking
-        again on a future flet upgrade."""
+        Containers rather than ft.Tabs - Flet's Tabs API has changed
+        shape across releases, so this avoids breaking on upgrades."""
         t = THEMES[state["theme"]]
         buttons = []
         for i, label in enumerate(TAB_LABELS):
@@ -966,7 +852,7 @@ def main(page: ft.Page):
                 def _click(e):
                     try:
                         state["selected_tab"] = idx
-                        state["visible_count"] = PAGE_SIZE  # FIX: reset pagination on tab change
+                        state["visible_count"] = PAGE_SIZE  # reset pagination on tab change
                         build_tab_row()
                         refresh_body()
                     except Exception as ex:
@@ -994,12 +880,9 @@ def main(page: ft.Page):
         tab_row.controls = buttons
 
     def build_stats_row():
-        """The old app's row of 6 accent-bordered stat tiles
-        (Books/Authors/Series/Read/Unread/Favorites) - a signature
-        piece of its look that had no equivalent here at all.
-        FIX: these tiles previously had no on_click at all - tapping
-        "Read", "Series", etc. did nothing. They now jump straight to
-        the matching tab, same as the old app's stat tiles did."""
+        """Row of 6 accent-bordered stat tiles
+        (Books/Authors/Series/Read/Unread/Favorites). Tapping a tile
+        jumps to the matching tab."""
         t = THEMES[state["theme"]]
         books = library.all_books()
         total = len(books)
@@ -1012,15 +895,14 @@ def main(page: ft.Page):
             (total, "Books"), (authors, "Authors"), (series_count, "Series"),
             (read_count, "Read"), (unread_count, "Unread"), (favorites, "Favorites"),
         ]
-        # FIX: maps each stat tile's label to the matching tab index in
-        # TAB_LABELS = ["Authors", "Series", "Books", "Read", "Unread", "Favorites"].
+        # Maps each tile's label to the matching tab index in TAB_LABELS.
         label_to_tab_index = {label: idx for idx, label in enumerate(TAB_LABELS)}
 
         def stat_tile(number, label):
             def _on_click(e):
                 try:
                     state["selected_tab"] = label_to_tab_index[label]
-                    state["visible_count"] = PAGE_SIZE  # FIX: reset pagination on tab change
+                    state["visible_count"] = PAGE_SIZE  # reset pagination on tab change
                     build_tab_row()
                     refresh_body()
                 except Exception as ex:
@@ -1043,23 +925,20 @@ def main(page: ft.Page):
                 bgcolor=t["card"],
                 border=ft.border.all(1, t["accent"]),
                 border_radius=small_pill_radius(),
-                shadow=soft_shadow(blur=6, opacity=0.15, dy=2),  # FIX (prettier): subtle lift on stat tiles
+                shadow=soft_shadow(blur=6, opacity=0.15, dy=2),
                 padding=ft.padding.symmetric(horizontal=6, vertical=12),
                 alignment=ft.alignment.center,
                 width=106,
-                on_click=_on_click,  # FIX: was missing entirely
-                ink=True,            # FIX: gives a visible tap ripple, like the old app's tiles
+                on_click=_on_click,
+                ink=True,
             )
 
         stats_row.controls = [stat_tile(n, l) for n, l in pairs]
-        page.update()  # FIX: push this change immediately instead of relying on a later, unrelated update()
+        page.update()
 
     def build_header_text():
-        """Centered title + italic tagline, colored from the active
-        theme - previously plain default-colored text with no tagline
-        at all, which is most of why the header didn't read as the
-        same app. FIX: also colors the new ornamental divider under
-        the tagline so it tracks the active theme's accent color too."""
+        """Centered title + tagline, colored from the active theme,
+        plus the ornamental divider under the tagline."""
         t = THEMES[state["theme"]]
         header_title.value = "StoryStrand"
         header_title.color = t["accent"]
@@ -1067,12 +946,12 @@ def main(page: ft.Page):
         header_divider_left.bgcolor = t["accent"]
         header_divider_right.bgcolor = t["accent"]
         header_divider_icon.color = t["accent"]
-        page.update()  # FIX: push this change immediately instead of relying on a later, unrelated update()
+        page.update()
 
     def on_search_change(value):
         try:
             state["search_query"] = value
-            state["visible_count"] = PAGE_SIZE  # FIX: reset pagination whenever the query changes
+            state["visible_count"] = PAGE_SIZE  # reset pagination whenever the query changes
             refresh_body()
         except Exception as ex:
             import traceback
@@ -1115,23 +994,11 @@ def main(page: ft.Page):
                 else:
                     content = build_flat_list(library.favorites())
 
-            # FIX (discoverability): lazy_load_trigger_row (Find Missing
-            # Book Info / Weave My Strand) lives in the fixed header - see
-            # below - so it's visible on every tab without scrolling.
-            # FIX (this round): lazy_load_column (the ghost-card progress
-            # list) does NOT belong in the header. My previous attempt put
-            # it there with a fixed height, and because the header sits
-            # outside the page's scrollable region, that fixed block ate
-            # almost the entire screen on every tab, all the time - not
-            # just during a fetch. It belongs here, inside the same
-            # scrolling Column as the tab's own content, where it can grow
-            # or shrink freely without resizing anything else on screen.
-            # FIX: there is now exactly ONE scrollable region for the
-            # whole body - this wrapping Column. build_tree/build_flat_list/
-            # build_series_view return plain, non-scrolling Columns, so
-            # there's no ambiguity about which level owns scrolling and
-            # no risk of a nested scrollable silently truncating the list
-            # or leaving stale content on screen after a tab switch.
+            # There is exactly ONE scrollable region for the whole body -
+            # this wrapping Column. The trigger buttons (Find Missing Book
+            # Info / Weave My Strand) live in the fixed header; the ghost
+            # card list (lazy_load_column) lives here in the scrolling body
+            # so it can grow or shrink without resizing anything else.
             body_holder.content = ft.Column(
                 key=f"body-{idx}-{query}",
                 controls=[content, lazy_load_column],
@@ -1171,29 +1038,15 @@ def main(page: ft.Page):
     )
     lazy_load_trigger_row = ft.Row(controls=[lazy_load_trigger, weave_button], wrap=True)
 
-    # FIX (prettier/romantic): swapped from Cormorant to Playfair Display
-    # for the title itself - a bolder, higher-contrast display serif that
-    # reads more like a book-cover title. Dropped the letter-spacing
-    # trick that was standing in for personality now that the font
-    # carries its own.
     header_title = ft.Text(
         "StoryStrand", size=44, weight=ft.FontWeight.BOLD,
         font_family="Playfair Display", text_align=ft.TextAlign.CENTER,
         style=ft.TextStyle(letter_spacing=0.5),
     )
-    # FIX (prettier/romantic): tagline moved from italic Baskerville to
-    # Dancing Script, a flowing handwritten script - sized up since
-    # script faces read as fussy/illegible small. Paired with the bold
-    # Playfair title above, this is the classic "bold headline + soft
-    # handwritten note underneath" letterhead look.
     header_tagline = ft.Text(
         "Where every story finds its thread",
         size=22, font_family="Dancing Script", text_align=ft.TextAlign.CENTER,
     )
-    # FIX: "prettier" -> "romantic": swapped the plain book-icon divider
-    # for a small heart-flourish glyph (a classic vintage-romance motif),
-    # and gave the whole title block a soft drop shadow for a bit of
-    # dimension instead of sitting flat on the background.
     header_divider_left = ft.Container(width=44, height=1)
     header_divider_right = ft.Container(width=44, height=1)
     header_divider_icon = ft.Text("❦", size=16, font_family="Cormorant")
@@ -1209,8 +1062,7 @@ def main(page: ft.Page):
         content=ft.Column(
             spacing=10,
             controls=[
-                # FIX: soft shadow behind the title block for a touch of
-                # romantic depth, instead of flat text on a flat background.
+                # Soft shadow behind the title block - the one shadow kept.
                 ft.Container(
                     shadow=ft.BoxShadow(
                         blur_radius=24, spread_radius=1,
@@ -1233,19 +1085,12 @@ def main(page: ft.Page):
                     ],
                 ),
                 tab_row,
-                # FIX (discoverability): the trigger buttons stay in the
-                # fixed header so they're visible on every tab without
-                # scrolling. The ghost-card progress list (lazy_load_column)
-                # is NOT here - see refresh_body() - it lives in the
-                # scrollable body instead, so it can never resize the header
-                # or push tab content off-screen.
                 lazy_load_trigger_row,
             ],
         ),
     )
 
-    # FIX: wrap the root control in SafeArea so the header respects the
-    # device status bar / notch instead of rendering underneath it.
+    # SafeArea keeps the header clear of the device status bar / notch.
     page.add(
         ft.SafeArea(
             content=ft.Column(
