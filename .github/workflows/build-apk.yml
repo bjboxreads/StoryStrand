@@ -3,39 +3,32 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
-
-permissions:
-  contents: write
+    branches: [main]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repo
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
 
       - name: Install Flet
-        run: pip install "flet[all]==0.28.3"
-
-      - name: Install app dependencies
-        run: pip install -r requirements.txt
+        run: pip install flet
 
       - name: Build APK
-        run: yes | flet build apk --project "StoryStrand" --org com.storystrand.app
+        run: flet build apk
 
-      - name: Upload APK to Release
-        uses: softprops/action-gh-release@v2
+      - name: Upload build
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: v1.0.${{ github.run_number }}
-          name: StoryStrand v1.0.${{ github.run_number }}
-          target_commitish: ${{ github.sha }}
-          files: build/apk/*.apk
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: app-build
+          path: build/**
