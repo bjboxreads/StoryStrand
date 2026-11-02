@@ -10,20 +10,10 @@ user can fix it up manually afterward.
 
 --- FIXES APPLIED (see comments marked "FIX:") ---
 1. FIX: added detect_series_from_title() / detect_series_index() /
-   clean_title_for_lookup(), ported from the old app's data.py
-   (detect_series / detect_series_number / clean_title_for_lookup).
-   The old app used these as a fallback whenever a CSV had no usable
-   series column (or the cell was blank) - the new importer was missing
-   this entirely, so every book without an explicit "series" column
-   silently came in as a standalone with the raw "(Series, #N)" still
-   stuck in the title, which is why a real import showed "0 series"
-   despite hundreds of books actually belonging to series.
-2. FIX: added clean_isbn(), also ported from the old app, which strips
-   the `="..."` wrapper Excel adds when it exports an ISBN column as
-   text (otherwise Excel would treat a 13-digit ISBN as a number and
-   mangle it). Without this, an ISBN cell exported by Excel/Goodreads
-   came through as the literal string `="9781234567890"` instead of
-   the ISBN.
+   clean_title_for_lookup(), ported from the old app's data.py.
+2. FIX: added clean_isbn(), strips the `="..."` wrapper Excel/Goodreads adds.
+3. FIX: added book_key() / dedupe_books() at the bottom of this file so a
+   re-uploaded file doesn't create duplicate books.
 """
 
 from __future__ import annotations
@@ -42,9 +32,7 @@ LINE_PATTERN = re.compile(
     r"\s*(?:-|–|—|,)\s*(?P<author>.+?)\s*$"
 )
 
-# FIX: title-embedded series patterns, ported from the old app's
-# detect_series()/detect_series_number() so CSVs/lines with no
-# explicit series column still get split into title + series + index.
+# FIX: title-embedded series patterns
 _SERIES_PATTERNS = [
     r"\(([^()]*)#\s*(\d+(?:\.\d+)?)\)",
     r"\[([^\[\]]*)#\s*(\d+(?:\.\d+)?)\]",
@@ -66,8 +54,7 @@ _SERIES_STRIP_PATTERNS = [
 
 def detect_series_from_title(title: str) -> Optional[str]:
     """FIX: pulls a series name out of a title like 'Bride (Bride, #1)'
-    or 'Mistborn [The Final Empire #1]'. Returns None if nothing matches
-    (i.e. the book is a genuine standalone)."""
+    or 'Mistborn [The Final Empire #1]'. Returns None if nothing matches."""
     text = str(title or "")
     for pattern in _SERIES_PATTERNS:
         match = re.search(pattern, text, re.IGNORECASE)
@@ -94,9 +81,7 @@ def detect_series_index(title: str) -> Optional[float]:
 
 
 def clean_title_for_lookup(title: str) -> str:
-    """FIX: strips the series/volume annotation back out of the title
-    once it's been captured into series/series_index, so the book's
-    stored title is just 'Bride' rather than 'Bride (Bride, #1)'."""
+    """FIX: strips the series/volume annotation back out of the title."""
     text = str(title or "")
     for pattern in _SERIES_STRIP_PATTERNS:
         text = re.sub(pattern, "", text, flags=re.IGNORECASE)
@@ -104,9 +89,7 @@ def clean_title_for_lookup(title: str) -> str:
 
 
 def clean_isbn(raw) -> str:
-    """FIX: strips Excel's `="..."` text-cell wrapper (added so a long
-    ISBN doesn't get reinterpreted/rounded as a number) plus any other
-    stray punctuation, matching the old app's clean_isbn()."""
+    """FIX: strips Excel's `="..."` text-cell wrapper plus stray punctuation."""
     s = str(raw if raw is not None else "").strip()
     if s.lower() in ("nan", "none", ""):
         return ""
@@ -117,10 +100,7 @@ def clean_isbn(raw) -> str:
 
 
 def _apply_title_series_detection(title: str, series: Optional[str], series_index: Optional[float]) -> Tuple[str, Optional[str], Optional[float]]:
-    """FIX: shared by both the CSV path and the line-parsing path -
-    if the caller didn't already have a series (e.g. from an explicit
-    CSV column), fall back to detecting one from the title text, and
-    strip the annotation out of the stored title either way."""
+    """FIX: shared by both the CSV path and the line-parsing path."""
     if not series:
         series = detect_series_from_title(title)
     if series and series_index is None:
@@ -147,16 +127,9 @@ def import_file(path: str) -> List[Book]:
 # ---------------- CSV ----------------
 
 def _detect_read_status(row, col) -> bool:
-    """FIX: the importer previously never set Book.read at all, so
-    every imported book silently defaulted to unread regardless of
-    what the CSV said - this is why "Read" showed 0 and "Unread"
-    showed the full count even for a Goodreads-style export that
-    clearly has read/unread info in it.
-
-    Checks, in order: an explicit "read" column (true/false/yes/1),
-    then a shelf/status column (Goodreads' "Exclusive Shelf", or
-    plain "Status"/"Shelf"), then falls back to "has a Date Read
-    value" as a last resort signal."""
+    """FIX: sets Book.read from an explicit "read" column, then a shelf/status
+    column (Goodreads' "Exclusive Shelf"), then falls back to "has a Date
+    Read value"."""
     read_col_raw = col(row, "read").strip().lower()
     if read_col_raw:
         return read_col_raw in ("true", "1", "1.0", "yes", "y", "read")
@@ -207,9 +180,9 @@ def _import_csv(path: str) -> List[Book]:
             author = col(row, "author", "authors", default="Unknown Author")
             series = col(row, "series") or None
             series_index_raw = col(row, "series_index", "series #", "#")
-            isbn = clean_isbn(col(row, "isbn"))  # FIX: was raw col(row, "isbn")
+            isbn = clean_isbn(col(row, "isbn"))
             genre = col(row, "genre")
-            read = _detect_read_status(row, col)  # FIX: was never set at all before
+            read = _detect_read_status(row, col)
         else:
             # no header: assume title, author, series order
             title = row[0].strip() if len(row) > 0 else ""
@@ -230,19 +203,16 @@ def _import_csv(path: str) -> List[Book]:
             except ValueError:
                 series_index = None
 
-        # FIX: fall back to title-embedded series detection whenever the
-        # row didn't already give us a series (no column, or blank cell).
         title, series, series_index = _apply_title_series_detection(title, series, series_index)
 
         books.append(Book(
             title=title,
             author=author or "Unknown Author",
             series=series,
-
             series_index=series_index,
             isbn=isbn,
             genre=genre,
-            read=read,  # FIX: was never passed at all
+            read=read,
         ))
     return books
 
@@ -267,10 +237,6 @@ def _import_lines(lines: List[str]) -> List[Book]:
                 except ValueError:
                     pass
             series = series.strip() if series else None
-            # FIX: LINE_PATTERN already captures an explicit "(Series #N)"
-            # group when present, but titles that embed the series without
-            # matching that exact shape still benefit from the same
-            # fallback detection used on the CSV path.
             title, series, series_index = _apply_title_series_detection(title, series, series_index)
             books.append(Book(
                 title=title,
@@ -279,9 +245,6 @@ def _import_lines(lines: List[str]) -> List[Book]:
                 series_index=series_index,
             ))
         else:
-            # fallback: whole line becomes the title, author unknown -
-            # the user (or a later metadata lookup) can fill in the rest.
-            # FIX: still worth checking for an embedded series here too.
             title, series, series_index = _apply_title_series_detection(line, None, None)
             books.append(Book(title=title, author="Unknown Author", series=series, series_index=series_index))
     return books
@@ -324,21 +287,11 @@ _DOC_WORD_RE = re.compile(r"[A-Za-z]{3,}")
 
 
 def _read_doc_lines(path: str) -> List[str]:
-    """Legacy .doc (Word 97-2003) is a binary OLE-compound-file format,
-    not text -- there's no reliable pure-Python parser for it the way
-    python-docx handles the newer, zip-based .docx. Previously this
-    just re-read the raw bytes as if they were a text file, which
-    silently produced garbage instead of book titles.
-
-    This instead pulls out printable text heuristically: Word stores
-    most user-entered text as UTF-16LE, so decoding as UTF-16LE and
-    keeping only runs that look like actual words (letters, reasonable
-    length) recovers plain, unformatted book lists reasonably well.
-    Tables, headers/footers, and other structured content will not
-    come through cleanly -- if this returns nothing usable, the caller
-    is told to convert the file to .docx instead, which python-docx
-    parses properly.
-    """
+    """Legacy .doc (Word 97-2003) is a binary OLE-compound-file format.
+    This pulls printable text heuristically: decodes as UTF-16LE and keeps
+    only runs that look like words. Tables, headers/footers and other
+    structured content will not come through cleanly -- convert to .docx
+    if this returns nothing usable."""
     with open(path, "rb") as f:
         raw = f.read()
 
@@ -351,11 +304,39 @@ def _read_doc_lines(path: str) -> List[str]:
             lines.append(chunk)
 
     if not lines:
-        # Fallback: some .doc files keep runs of plain ASCII/Latin-1
-        # text alongside (or instead of) UTF-16LE runs.
         latin1_text = raw.decode("latin-1", errors="ignore")
         for chunk in re.findall(r"[ -~]{4,}", latin1_text):
             if _DOC_WORD_RE.search(chunk):
                 lines.append(chunk.strip())
 
     return lines
+
+
+# ---------------- duplicate detection ----------------
+
+def _norm(text: str) -> str:
+    """FIX: lowercase, drop punctuation, collapse spaces, so 'Bride' and
+    'bride!' count as the same."""
+    text = re.sub(r"[^a-z0-9]+", " ", str(text or "").lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def book_key(book: Book) -> Tuple[str, str]:
+    """FIX: what makes two books 'the same': cleaned title + author."""
+    return (_norm(clean_title_for_lookup(book.title)), _norm(book.author))
+
+
+def dedupe_books(new_books: List[Book], existing_books=()) -> Tuple[List[Book], int]:
+    """FIX: returns (books_worth_adding, number_skipped). Skips anything
+    already in existing_books AND repeats within new_books itself."""
+    seen = {book_key(b) for b in existing_books}
+    unique: List[Book] = []
+    skipped = 0
+    for b in new_books:
+        k = book_key(b)
+        if k in seen:
+            skipped += 1
+            continue
+        seen.add(k)
+        unique.append(b)
+    return unique, skipped
