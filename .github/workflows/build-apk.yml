@@ -3,8 +3,11 @@ name: Build APK
 on:
   workflow_dispatch:
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -30,6 +33,9 @@ jobs:
       - name: Upload APK to Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: v1.0.${{ github.run_number }}
+          name: StoryStrand v1.0.${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
           files: build/apk/*.apk
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
