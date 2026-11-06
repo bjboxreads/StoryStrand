@@ -22,6 +22,13 @@ PERFORMANCE NOTES (latest round):
     with a "Load more authors" button, instead of building every
     author's whole subtree on every refresh.
   - Book cards in flat/series views already load in pages (PAGE_SIZE).
+
+LATEST CHANGES:
+  - Book cards are now tap-to-expand: tapping a card drops down its
+    details (author, genre, published date, description). Which cards
+    are open is remembered in state["expanded_books"].
+  - While searching, the Authors tab opens every matching author and
+    series automatically so results are visible without extra clicks.
 """
 
 import threading
@@ -84,6 +91,7 @@ def main(page: ft.Page):
         "visible_count": PAGE_SIZE,  # how many cards/authors render before "Load more"
         "expanded_authors": set(),   # authors currently expanded in the Authors tab tree
         "expanded_branches": set(),  # (author, branch_key) pairs currently expanded
+        "expanded_books": set(),     # book ids whose detail panel is open
     }
 
     # ---------------- theming ----------------
@@ -188,38 +196,85 @@ def main(page: ft.Page):
             subtitle_bits.append(f"ISBN {book.isbn}")
         subtitle = "  •  ".join(subtitle_bits)
 
+        # ---- expandable details panel (tap the card to open/close) ----
+        detail_widgets = []
+        if book.author:
+            detail_widgets.append(ft.Text(f"by {book.author}", size=12, color=t["text"]))
+        if book.genre:
+            detail_widgets.append(ft.Text(f"Genre: {book.genre}", size=12, color=t["muted"]))
+        if book.published:
+            detail_widgets.append(ft.Text(f"Published: {book.published}", size=12, color=t["muted"]))
+        if book.description:
+            detail_widgets.append(ft.Text(book.description, size=12, color=t["text"]))
+        if not detail_widgets:
+            detail_widgets.append(
+                ft.Text("No extra details yet. Tap the pencil to add some.",
+                        size=12, italic=True, color=t["muted"])
+            )
+
+        is_open = book.id in state["expanded_books"]
+        details = ft.Container(
+            visible=is_open,
+            padding=ft.padding.only(top=8, left=4, right=4),
+            content=ft.Column(controls=detail_widgets, spacing=4),
+        )
+        chevron = ft.Icon(
+            ft.Icons.EXPAND_LESS if is_open else ft.Icons.EXPAND_MORE,
+            size=18, color=t["muted"],
+        )
+
+        def toggle_details(e):
+            if book.id in state["expanded_books"]:
+                state["expanded_books"].discard(book.id)
+                details.visible = False
+                chevron.name = ft.Icons.EXPAND_MORE
+            else:
+                state["expanded_books"].add(book.id)
+                details.visible = True
+                chevron.name = ft.Icons.EXPAND_LESS
+            page.update()
+
         return ft.Container(
             padding=10,
             border_radius=pill_radius(),
             bgcolor=t["surface"],
             border=ft.border.only(left=ft.BorderSide(4, t[status_stripe_key(book)])),
             shadow=soft_shadow(),
-            content=ft.Row(
+            on_click=toggle_details,
+            ink=True,
+            content=ft.Column(
+                spacing=0,
                 controls=[
-                    cover,
-                    ft.Column(
-                        expand=True,
-                        spacing=0,
+                    ft.Row(
                         controls=[
-                            ft.Text(book.title, size=14, weight=ft.FontWeight.BOLD,
-                                     color=t["text"], font_family="Baskerville"),
-                            ft.Text(subtitle, size=11, italic=True, color=t["muted"]),
+                            cover,
+                            ft.Column(
+                                expand=True,
+                                spacing=0,
+                                controls=[
+                                    ft.Text(book.title, size=14, weight=ft.FontWeight.BOLD,
+                                             color=t["text"], font_family="Baskerville"),
+                                    ft.Text(subtitle, size=11, italic=True, color=t["muted"]),
+                                ],
+                            ),
+                            chevron,
+                            ft.IconButton(
+                                icon=ft.Icons.STAR if book.favorite else ft.Icons.STAR_BORDER,
+                                icon_color=t["accent"],
+                                tooltip="Favorite",
+                                on_click=toggle_fav,
+                            ),
+                            ft.IconButton(
+                                icon=ft.Icons.CHECK_CIRCLE if book.read else ft.Icons.CHECK_CIRCLE_OUTLINE,
+                                icon_color=t["accent2"],
+                                tooltip="Read / Unread",
+                                on_click=toggle_read,
+                            ),
+                            ft.IconButton(icon=ft.Icons.EDIT, icon_color=t["muted"], tooltip="Edit", on_click=edit),
+                            ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color=t["muted"], tooltip="Remove", on_click=remove),
                         ],
                     ),
-                    ft.IconButton(
-                        icon=ft.Icons.STAR if book.favorite else ft.Icons.STAR_BORDER,
-                        icon_color=t["accent"],
-                        tooltip="Favorite",
-                        on_click=toggle_fav,
-                    ),
-                    ft.IconButton(
-                        icon=ft.Icons.CHECK_CIRCLE if book.read else ft.Icons.CHECK_CIRCLE_OUTLINE,
-                        icon_color=t["accent2"],
-                        tooltip="Read / Unread",
-                        on_click=toggle_read,
-                    ),
-                    ft.IconButton(icon=ft.Icons.EDIT, icon_color=t["muted"], tooltip="Edit", on_click=edit),
-                    ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color=t["muted"], tooltip="Remove", on_click=remove),
+                    details,
                 ],
             ),
         )
@@ -240,6 +295,10 @@ def main(page: ft.Page):
         state["expanded_authors"] / state["expanded_branches"], so a
         refresh (e.g. tapping a book's favorite star) keeps them open.
 
+        SEARCH: when filtered_ids is given (the user is searching),
+        every matching author and branch is shown already opened so
+        results are visible without extra clicks.
+
         NOTE: this deliberately avoids wrapping children in a Row +
         expand=True Container (that squeezed titles to a few pixels).
         Plain Column-in-Column nesting with an indent + left border is
@@ -247,6 +306,7 @@ def main(page: ft.Page):
         """
         t = THEMES[state["theme"]]
         tree_data = library.tree()
+        searching = filtered_ids is not None  # when searching, show matches already opened up
 
         # Cheap pass (no widgets): which authors have anything to show?
         authors_to_show = []
@@ -276,7 +336,7 @@ def main(page: ft.Page):
                     books = sorted(books, key=lambda b: (b.series_index is None, b.series_index or 0))
 
                 branch_state_key = (author, branch_key)
-                branch_expanded = branch_state_key in state["expanded_branches"]
+                branch_expanded = searching or branch_state_key in state["expanded_branches"]
 
                 book_column = ft.Column(
                     controls=[render_book_card(b) for b in books] if branch_expanded else [],
@@ -287,7 +347,7 @@ def main(page: ft.Page):
                 def make_toggle(col=book_column, branch_books=books, skey=branch_state_key):
                     def _toggle(e):
                         try:
-                            if skey in state["expanded_branches"]:
+                            if col.visible:
                                 state["expanded_branches"].discard(skey)
                                 col.visible = False
                             else:
@@ -344,7 +404,7 @@ def main(page: ft.Page):
 
         author_controls = []
         for author, kept in visible_authors:
-            author_expanded = author in state["expanded_authors"]
+            author_expanded = searching or author in state["expanded_authors"]
             author_column = ft.Column(
                 controls=build_branch_controls(author, kept) if author_expanded else [],
                 spacing=10,
@@ -354,7 +414,7 @@ def main(page: ft.Page):
             def make_author_toggle(col=author_column, akey=author, akept=kept):
                 def _toggle(e):
                     try:
-                        if akey in state["expanded_authors"]:
+                        if col.visible:
                             state["expanded_authors"].discard(akey)
                             col.visible = False
                         else:
