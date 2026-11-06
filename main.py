@@ -208,15 +208,28 @@ def main(page: ft.Page):
             detail_widgets.append(ft.Text(book.description, size=12, color=t["text"]))
         if not detail_widgets:
             detail_widgets.append(
-                ft.Text("No extra details yet. Tap the pencil to add some.",
+                ft.Text("No extra details yet. Tap Edit to add some.",
                         size=12, italic=True, color=t["muted"])
             )
+
+        # Edit / Remove live in the expanded panel so the title row has
+        # room to breathe on a phone-width screen.
+        action_row = ft.Row(
+            controls=[
+                ft.TextButton("Edit", icon=ft.Icons.EDIT, on_click=edit,
+                              style=ft.ButtonStyle(color=t["muted"])),
+                ft.TextButton("Remove", icon=ft.Icons.DELETE_OUTLINE, on_click=remove,
+                              style=ft.ButtonStyle(color=t["muted"])),
+            ],
+            spacing=4,
+            wrap=True,
+        )
 
         is_open = book.id in state["expanded_books"]
         details = ft.Container(
             visible=is_open,
             padding=ft.padding.only(top=8, left=4, right=4),
-            content=ft.Column(controls=detail_widgets, spacing=4),
+            content=ft.Column(controls=detail_widgets + [action_row], spacing=4),
         )
         chevron = ft.Icon(
             ft.Icons.EXPAND_LESS if is_open else ft.Icons.EXPAND_MORE,
@@ -263,15 +276,17 @@ def main(page: ft.Page):
                                 icon_color=t["accent"],
                                 tooltip="Favorite",
                                 on_click=toggle_fav,
+                                icon_size=22, width=36, height=36,
+                                style=ft.ButtonStyle(padding=0),
                             ),
                             ft.IconButton(
                                 icon=ft.Icons.CHECK_CIRCLE if book.read else ft.Icons.CHECK_CIRCLE_OUTLINE,
                                 icon_color=t["accent2"],
                                 tooltip="Read / Unread",
                                 on_click=toggle_read,
+                                icon_size=22, width=36, height=36,
+                                style=ft.ButtonStyle(padding=0),
                             ),
-                            ft.IconButton(icon=ft.Icons.EDIT, icon_color=t["muted"], tooltip="Edit", on_click=edit),
-                            ft.IconButton(icon=ft.Icons.DELETE_OUTLINE, icon_color=t["muted"], tooltip="Remove", on_click=remove),
                         ],
                     ),
                     details,
