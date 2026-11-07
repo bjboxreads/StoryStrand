@@ -30,13 +30,13 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Build APK
-        run: yes | flet build appbundle --project "StoryStrand" --org com.storystrand.app
+        run: yes | flet build aab --project "StoryStrand" --org com.storystrand.app
 
       - name: Save APK as artifact
         uses: actions/upload-artifact@v4
         with:
           name: StoryStrand-apk
-          path: build/apk/*.appbundle
+          path: build/apk/*.aab
 
       - name: Upload APK to Release
         if: startsWith(github.ref, 'refs/tags/')
