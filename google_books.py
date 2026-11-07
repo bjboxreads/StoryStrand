@@ -35,13 +35,25 @@ Metadata lookups against Google Books AND OpenLibrary, plus three features:
      672 series one at a time was the "Weave My Strand" equivalent of
      the same slowdown fixed in #4.
 
+  6. FIX (rate limits): every web request now goes through _get_json(),
+     which retries with a growing wait when Google Books or OpenLibrary
+     answers "slow down" (HTTP 429) or a temporary server error, instead
+     of silently counting the book as "not found". If Google Books keeps
+     refusing, it is skipped for a minute so the other lookups don't each
+     waste time on it, and OpenLibrary fills in meanwhile. A Google Books
+     API key is optional: set the GOOGLE_BOOKS_API_KEY environment
+     variable and it is used automatically (a key gets a much higher
+     quota); with no key set, behavior is the same as before.
+
 Both/all are self-contained here - nothing in this file rewrites the
 rest of main.py, it only returns ready-to-place ft.Control objects or
 plain data.
 """
 
 from __future__ import annotations
+import os
 import re
+import time
 import difflib
 import threading
 import requests
@@ -52,6 +64,10 @@ from typing import Callable, List, Optional
 from models import Book, Library, normalize_title_key
 
 GOOGLE_BOOKS_ENDPOINT = "https://www.googleapis.com/books/v1/volumes"
+
+# Optional: a Google Books API key gives a much higher request quota.
+# Leave unset to keep using the free keyless quota.
+GOOGLE_BOOKS_API_KEY = os.environ.get("GOOGLE_BOOKS_API_KEY", "").strip()
 
 # "#2", "Book 2", "Vol. 2" inside a title - used to guess a discovered
 # volume's position in its series.
@@ -66,6 +82,64 @@ OPENLIBRARY_SEARCH_ENDPOINT = "https://openlibrary.org/search.json"
 OPENLIBRARY_HEADERS = {"User-Agent": "StoryStrand/1.0 (personal book library app; contact: n/a)"}
 
 STOPWORDS = {"the", "a", "an", "of", "and", "&"}
+
+
+# ---------------- shared web request helper (retries + cooldown) ----------------
+
+# If Google Books keeps answering "slow down" even after retries, every
+# Google lookup is skipped until this moment (time.monotonic() seconds),
+# so the worker threads stop wasting time on a service that's refusing.
+_google_blocked_until = 0.0
+GOOGLE_COOLDOWN_SECONDS = 60
+
+_RETRY_STATUS_CODES = (429, 500, 502, 503, 504)
+
+
+def _get_json(url: str, params: dict, headers: Optional[dict] = None,
+              is_google: bool = False, retries: int = 3) -> Optional[dict]:
+    """GET a URL and return its parsed JSON, or None if it ultimately
+    fails. Unlike a bare requests.get(), this waits and tries again
+    (2s, then 4s) when the service says "too many requests" or has a
+    temporary hiccup, so a burst of lookups doesn't quietly turn into
+    a pile of "not found" results."""
+    global _google_blocked_until
+
+    if is_google:
+        if time.monotonic() < _google_blocked_until:
+            return None  # Google is cooling down; let OpenLibrary cover for it
+        if GOOGLE_BOOKS_API_KEY:
+            params = dict(params)
+            params["key"] = GOOGLE_BOOKS_API_KEY
+
+    delay = 2.0
+    for attempt in range(retries):
+        last_attempt = attempt == retries - 1
+        try:
+            resp = requests.get(url, params=params, timeout=10, headers=headers)
+            # Google sometimes reports "over quota" as 403 instead of 429,
+            # so for Google a 403 is treated as "slow down", not "no".
+            rate_limited = resp.status_code == 429 or (is_google and resp.status_code == 403)
+            if rate_limited or resp.status_code in _RETRY_STATUS_CODES:
+                if last_attempt:
+                    if is_google and rate_limited:
+                        _google_blocked_until = time.monotonic() + GOOGLE_COOLDOWN_SECONDS
+                    return None
+                wait = delay
+                retry_after = resp.headers.get("Retry-After", "")
+                if retry_after.isdigit():
+                    wait = min(int(retry_after), 30)
+                time.sleep(wait)
+                delay *= 2
+                continue
+            if resp.status_code >= 400:
+                return None  # a real "no" (bad query, not found): retrying won't help
+            return resp.json()
+        except (requests.RequestException, ValueError):
+            if last_attempt:
+                return None
+            time.sleep(delay)
+            delay *= 2
+    return None
 
 
 def _normalize_words(text: str) -> List[str]:
@@ -115,11 +189,8 @@ def search_google_books(title: str, author: str = "") -> Optional[dict]:
         query_parts.append(f'inauthor:{author}')
     params = {"q": " ".join(query_parts), "maxResults": 1}
 
-    try:
-        resp = requests.get(GOOGLE_BOOKS_ENDPOINT, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-    except (requests.RequestException, ValueError):
+    data = _get_json(GOOGLE_BOOKS_ENDPOINT, params, is_google=True)
+    if not data:
         return None
 
     items = data.get("items") or []
@@ -157,11 +228,8 @@ def _search_openlibrary_single(title: str, author: str = "") -> Optional[dict]:
     if author and author != "Unknown Author":
         params["author"] = author
 
-    try:
-        resp = requests.get(OPENLIBRARY_SEARCH_ENDPOINT, params=params, timeout=10, headers=OPENLIBRARY_HEADERS)
-        resp.raise_for_status()
-        data = resp.json()
-    except (requests.RequestException, ValueError):
+    data = _get_json(OPENLIBRARY_SEARCH_ENDPOINT, params, headers=OPENLIBRARY_HEADERS)
+    if not data:
         return None
 
     docs = data.get("docs") or []
@@ -375,11 +443,8 @@ def _search_google_books_raw(series_name: str, author: str = "", max_results: in
         query_parts.append(f'inauthor:{author}')
     params = {"q": " ".join(query_parts), "maxResults": max_results}
 
-    try:
-        resp = requests.get(GOOGLE_BOOKS_ENDPOINT, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-    except (requests.RequestException, ValueError):
+    data = _get_json(GOOGLE_BOOKS_ENDPOINT, params, is_google=True)
+    if not data:
         return []
 
     results = []
@@ -410,13 +475,8 @@ def _search_openlibrary_raw(series_name: str, author: str = "", max_results: int
     if author and author != "Unknown Author":
         params["author"] = author
 
-    try:
-        resp = requests.get(
-            OPENLIBRARY_SEARCH_ENDPOINT, params=params, timeout=10, headers=OPENLIBRARY_HEADERS
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except (requests.RequestException, ValueError):
+    data = _get_json(OPENLIBRARY_SEARCH_ENDPOINT, params, headers=OPENLIBRARY_HEADERS)
+    if not data:
         return []
 
     results = []
