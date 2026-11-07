@@ -17,3 +17,7 @@ path = "."
 org = "com.storystrand.app"
 product = "StoryStrand"
 company = "bjboxreads"
+
+[tool.flet.android]
+min_sdk_version = 24
+target_sdk_version = 36
