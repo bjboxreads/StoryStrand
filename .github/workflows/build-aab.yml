@@ -32,15 +32,33 @@ jobs:
       - name: Restore signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        run: echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload-keystore.jks"
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload-keystore.jks"
+          if [ ! -s "$RUNNER_TEMP/upload-keystore.jks" ]; then
+            echo "ERROR: KEYSTORE_BASE64 secret is missing or empty."
+            exit 1
+          fi
 
       - name: Build AAB
         env:
-          FLET_ANDROID_SIGNING_KEY_STORE: ${{ runner.temp }}/upload-keystore.jks
-          FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          FLET_ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          FLET_ANDROID_SIGNING_KEY_ALIAS: upload
-        run: yes | flet build aab --project "StoryStrand" --org com.storystrand.app --build-number ${{ github.run_number }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          yes | flet build aab \
+            --project "StoryStrand" \
+            --org com.storystrand.app \
+            --build-number ${{ github.run_number }} \
+            --android-signing-key-store "$RUNNER_TEMP/upload-keystore.jks" \
+            --android-signing-key-store-password "$KEYSTORE_PASSWORD" \
+            --android-signing-key-password "$KEYSTORE_PASSWORD" \
+            --android-signing-key-alias upload
+
+      - name: Verify bundle is release-signed
+        run: |
+          keytool -printcert -jarfile build/aab/*.aab | head -n 8
+          if keytool -printcert -jarfile build/aab/*.aab | grep -q "Android Debug"; then
+            echo "ERROR: bundle is still signed with the debug key."
+            exit 1
+          fi
 
       - name: Save AAB as artifact
         uses: actions/upload-artifact@v4
