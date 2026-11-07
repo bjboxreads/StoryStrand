@@ -1,4 +1,4 @@
-name: Build APK
+name: Build AAB
 
 on:
   workflow_dispatch:
@@ -29,8 +29,18 @@ jobs:
       - name: Install app dependencies
         run: pip install -r requirements.txt
 
+      - name: Restore signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/upload-keystore.jks"
+
       - name: Build AAB
-        run: yes | flet build aab --project "StoryStrand" --org com.storystrand.app
+        env:
+          FLET_ANDROID_SIGNING_KEY_STORE: ${{ runner.temp }}/upload-keystore.jks
+          FLET_ANDROID_SIGNING_KEY_STORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          FLET_ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          FLET_ANDROID_SIGNING_KEY_ALIAS: upload
+        run: yes | flet build aab --project "StoryStrand" --org com.storystrand.app --build-number ${{ github.run_number }}
 
       - name: Save AAB as artifact
         uses: actions/upload-artifact@v4
