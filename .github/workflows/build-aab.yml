@@ -45,7 +45,8 @@ jobs:
         run: |
           yes | flet build aab \
             --project "StoryStrand" \
-            --org com.storystrand.app \
+            --org com.bjboxreads \
+            --bundle-id com.bjboxreads.storystrand \
             --build-number ${{ github.run_number }} \
             --android-signing-key-store "$RUNNER_TEMP/upload-keystore.jks" \
             --android-signing-key-store-password "$KEYSTORE_PASSWORD" \
