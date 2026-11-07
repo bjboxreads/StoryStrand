@@ -29,19 +29,20 @@ jobs:
       - name: Install app dependencies
         run: pip install -r requirements.txt
 
-      - name: Build APK
+      - name: Build AAB
         run: yes | flet build aab --project "StoryStrand" --org com.storystrand.app
 
-      - name: Save APK as artifact
+      - name: Save AAB as artifact
         uses: actions/upload-artifact@v4
         with:
-          name: StoryStrand-apk
-          path: build/apk/*.aab
+          name: StoryStrand-aab
+          path: build/aab/*.aab
+          if-no-files-found: error
 
-      - name: Upload APK to Release
+      - name: Upload AAB to Release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: build/apk/*.apk
+          files: build/aab/*.aab
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
