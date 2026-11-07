@@ -29,6 +29,10 @@ LATEST CHANGES:
     are open is remembered in state["expanded_books"].
   - While searching, the Authors tab opens every matching author and
     series automatically so results are visible without extra clicks.
+  - Book cards keep the title row roomy on phones: only star and read
+    stay on the row; Edit and Remove live in the expanded panel.
+  - Manually added books now auto-fill cover, description, genre and
+    publisher in the background (only fields left blank).
 """
 
 import threading
@@ -618,6 +622,37 @@ def main(page: ft.Page):
 
         return ft.Column(controls=blocks, spacing=10)
 
+    # ---------------- auto-fill for manually added books ----------------
+
+    def auto_fill_new_book(book: Book):
+        """After a manual add, quietly look up the cover, description,
+        genre and publisher in the background (same Google Books ->
+        OpenLibrary lookup the import uses) and fill in ONLY what the
+        user left blank - anything they typed is never overwritten."""
+        if not (book.title or "").strip():
+            return
+
+        page.open(ft.SnackBar(ft.Text(f'Looking up details for "{book.title}"…')))
+        page.update()
+
+        def _run():
+            try:
+                stats = fetch_missing_metadata_parallel([book])
+                library.save()
+                refresh_all()
+                if stats.get("found"):
+                    msg = f'✨ Filled in details for "{book.title}".'
+                else:
+                    msg = f'Couldn\'t find details online for "{book.title}". You can tap Edit to add them.'
+            except Exception as ex:
+                import traceback
+                traceback.print_exc()
+                msg = f"Detail lookup failed: {ex}"
+            page.open(ft.SnackBar(ft.Text(msg)))
+            page.update()
+
+        threading.Thread(target=_run, daemon=True).start()
+
     # ---------------- add / edit dialog ----------------
 
     def open_book_dialog(book: Book = None, prefill: dict = None):
@@ -680,6 +715,7 @@ def main(page: ft.Page):
                 description=description_f.value.strip(),
             )
 
+            new_book = None
             if editing:
                 library.update_book(
                     book.id,
@@ -688,14 +724,17 @@ def main(page: ft.Page):
                     **shared_fields,
                 )
             else:
-                library.add_book(Book(
+                new_book = Book(
                     title=title_f.value.strip(),
                     author=author_f.value.strip() or "Unknown Author",
                     manual_entry=True,
                     **shared_fields,
-                ))
+                )
+                library.add_book(new_book)
             page.close(dialog)
             refresh_all()
+            if new_book is not None:
+                auto_fill_new_book(new_book)
 
         dialog = ft.AlertDialog(
             modal=True,
