@@ -24,6 +24,10 @@ PERFORMANCE NOTES (latest round):
   - Book cards in flat/series views already load in pages (PAGE_SIZE).
 
 LATEST CHANGES:
+  - NEW: a short welcome tour (4 screens, with Skip) shows the first
+    time the app opens. It is only shown once - the app remembers it
+    was seen. A small "?" button next to the theme picker reopens it
+    any time.
   - The chosen color theme is now saved on the device and restored on
     startup (it used to reset to the default every time the app opened).
     The custom palette is also applied in the phone's dark mode, not
@@ -75,6 +79,33 @@ def soft_shadow(blur=10, opacity=0.18, dy=3):
 PAGE_SIZE = 60  # how many cards/authors to build per "page" before "Load more"
 
 THEME_STORAGE_KEY = "storystrand_theme"  # where the chosen theme name is saved on the device
+TOUR_STORAGE_KEY = "storystrand_tour_seen"  # remembers that the welcome tour has been shown
+
+# The welcome tour: (icon, title, short text). Edit the wording here.
+TOUR_STEPS = [
+    (
+        ft.Icons.AUTO_STORIES,
+        "Welcome to StoryStrand",
+        "Your books, organized by author and series. Here's a quick look around.",
+    ),
+    (
+        ft.Icons.UPLOAD_FILE,
+        "Bring in your books",
+        "Tap Import File and pick your Goodreads CSV, or tap Add Book to type one in yourself.",
+    ),
+    (
+        ft.Icons.ACCOUNT_TREE,
+        "Browse your way",
+        "Use the tabs to see Authors, Series, Books, Read, Unread or Favorites. "
+        "Tap an author to open their books.",
+    ),
+    (
+        ft.Icons.PALETTE,
+        "Make it yours",
+        "Tap any book for details. The star marks a favorite and the circle marks it read. "
+        "Pick a color Theme near the top, and tap the ? any time to see this again.",
+    ),
+]
 
 
 def status_stripe_key(book: Book) -> str:
@@ -146,6 +177,106 @@ def main(page: ft.Page):
         page.theme = theme_obj
         page.dark_theme = theme_obj
         page.update()
+
+    # ---------------- welcome tour (first launch only) ----------------
+
+    def has_seen_tour() -> bool:
+        """True if the welcome tour was already shown on this device.
+        If saved data can't be read, answers True so the tour never
+        nags on every launch."""
+        try:
+            return bool(page.client_storage.get(TOUR_STORAGE_KEY))
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            return True
+
+    def mark_tour_seen():
+        try:
+            page.client_storage.set(TOUR_STORAGE_KEY, True)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
+    def open_tour(e=None):
+        """Short step-by-step welcome. Skip is always available, and
+        finishing or skipping remembers that it was seen."""
+        t = THEMES[state["theme"]]
+        step = {"i": 0}
+        last_index = len(TOUR_STEPS) - 1
+
+        tour_icon = ft.Icon(TOUR_STEPS[0][0], size=44, color=t["accent"])
+        tour_title = ft.Text(
+            "", size=22, weight=ft.FontWeight.BOLD, color=t["accent"],
+            font_family="Cormorant", text_align=ft.TextAlign.CENTER,
+        )
+        tour_body = ft.Text(
+            "", size=14, color=t["text"], text_align=ft.TextAlign.CENTER,
+        )
+        tour_dots = ft.Row(alignment=ft.MainAxisAlignment.CENTER, spacing=6)
+
+        skip_btn = ft.TextButton("Skip", style=ft.ButtonStyle(color=t["muted"]))
+        back_btn = ft.TextButton("Back", style=ft.ButtonStyle(color=t["muted"]))
+        next_btn = ft.FilledButton(
+            "Next", style=ft.ButtonStyle(bgcolor=t["accent"], color=t["page"]),
+        )
+
+        def render_step():
+            i = step["i"]
+            icon_name, title_text, body_text = TOUR_STEPS[i]
+            tour_icon.name = icon_name
+            tour_title.value = title_text
+            tour_body.value = body_text
+            tour_dots.controls = [
+                ft.Container(
+                    width=8, height=8, border_radius=4,
+                    bgcolor=t["accent"] if j == i else t["line"],
+                )
+                for j in range(len(TOUR_STEPS))
+            ]
+            back_btn.visible = i > 0
+            skip_btn.visible = i < last_index
+            next_btn.text = "Done" if i == last_index else "Next"
+
+        def finish(ev=None):
+            mark_tour_seen()
+            page.close(tour_dialog)
+            page.update()
+
+        def go_next(ev):
+            if step["i"] >= last_index:
+                finish()
+            else:
+                step["i"] += 1
+                render_step()
+                page.update()
+
+        def go_back(ev):
+            if step["i"] > 0:
+                step["i"] -= 1
+                render_step()
+                page.update()
+
+        skip_btn.on_click = finish
+        back_btn.on_click = go_back
+        next_btn.on_click = go_next
+
+        tour_dialog = ft.AlertDialog(
+            modal=True,
+            bgcolor=t["surface"],
+            content=ft.Column(
+                controls=[tour_icon, tour_title, tour_body, tour_dots],
+                tight=True,
+                width=300,
+                spacing=14,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            actions=[skip_btn, back_btn, next_btn],
+            actions_alignment=ft.MainAxisAlignment.END,
+            on_dismiss=lambda ev: mark_tour_seen(),
+        )
+        render_step()
+        page.open(tour_dialog)
 
     # ---------------- shared empty-state renderer ----------------
 
@@ -1210,6 +1341,13 @@ def main(page: ft.Page):
     )
     stats_row = ft.Row(spacing=8, wrap=True, run_spacing=8)
 
+    # The "?" button reopens the welcome tour any time.
+    help_button = ft.IconButton(
+        icon=ft.Icons.HELP_OUTLINE,
+        tooltip="Quick tour",
+        on_click=open_tour,
+    )
+
     header = ft.Container(
         padding=16,
         content=ft.Column(
@@ -1228,7 +1366,7 @@ def main(page: ft.Page):
                         spacing=6,
                     ),
                 ),
-                ft.Row(controls=[ft.Container(expand=True), theme_dropdown]),
+                ft.Row(controls=[ft.Container(expand=True), help_button, theme_dropdown]),
                 stats_row,
                 ft.Row(
                     controls=[
@@ -1258,6 +1396,10 @@ def main(page: ft.Page):
     build_header_text()
     build_stats_row()
     refresh_body()
+
+    # First launch only: show the short welcome tour.
+    if not has_seen_tour():
+        open_tour()
 
 
 if __name__ == "__main__":
