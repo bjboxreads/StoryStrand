@@ -82,3 +82,15 @@ Not yet built (good next steps): genre-based tabs/filters, drag-to-reorder
 within a series, bulk edit, cover image caching to disk, a proper
 about/settings tab, and packaging config (`pyproject.toml` flet section)
 for the Play Store build.
+
+## License
+
+StoryStrand is free to use, study, and build on for personal and other
+noncommercial purposes under the PolyForm Noncommercial License 1.0.0
+(see the LICENSE file).
+
+Selling it, charging users, or using it in a paid product or service
+(including apps with ads or in-app purchases) needs a separate commercial
+license. To ask about one, contact: [how people can reach you]
+
+Commercial terms are agreed in a separate written agreement.
