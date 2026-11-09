@@ -24,6 +24,10 @@ PERFORMANCE NOTES (latest round):
   - Book cards in flat/series views already load in pages (PAGE_SIZE).
 
 LATEST CHANGES:
+  - The chosen color theme is now saved on the device and restored on
+    startup (it used to reset to the default every time the app opened).
+    The custom palette is also applied in the phone's dark mode, not
+    just light mode.
   - Book cards are now tap-to-expand: tapping a card drops down its
     details (author, genre, published date, description). Which cards
     are open is remembered in state["expanded_books"].
@@ -70,6 +74,8 @@ def soft_shadow(blur=10, opacity=0.18, dy=3):
 
 PAGE_SIZE = 60  # how many cards/authors to build per "page" before "Load more"
 
+THEME_STORAGE_KEY = "storystrand_theme"  # where the chosen theme name is saved on the device
+
 
 def status_stripe_key(book: Book) -> str:
     """Returns a THEME key ('accent2'/'muted') - caller resolves it
@@ -87,9 +93,30 @@ def main(page: ft.Page):
         "Dancing Script": "https://raw.githubusercontent.com/google/fonts/main/ofl/dancingscript/DancingScript%5Bwght%5D.ttf",
     }
 
+    # ---------------- saved theme (survives app restarts) ----------------
+
+    def load_saved_theme() -> str:
+        """Returns the theme the user last picked, or DEFAULT_THEME if
+        nothing is saved yet (or the saved name no longer exists)."""
+        try:
+            saved = page.client_storage.get(THEME_STORAGE_KEY)
+            if saved in THEMES:
+                return saved
+        except Exception:
+            import traceback
+            traceback.print_exc()
+        return DEFAULT_THEME
+
+    def save_theme(theme_name: str):
+        try:
+            page.client_storage.set(THEME_STORAGE_KEY, theme_name)
+        except Exception:
+            import traceback
+            traceback.print_exc()
+
     library = Library()
     state = {
-        "theme": DEFAULT_THEME,
+        "theme": load_saved_theme(),
         "search_query": "",
         "missing_by_series": {},  # series name -> [volume dicts] from Weave My Strand
         "visible_count": PAGE_SIZE,  # how many cards/authors render before "Load more"
@@ -104,7 +131,7 @@ def main(page: ft.Page):
         t = THEMES[theme_name]
         state["theme"] = theme_name
         page.bgcolor = t["page"]
-        page.theme = ft.Theme(
+        theme_obj = ft.Theme(
             color_scheme=ft.ColorScheme(
                 primary=t["accent"],
                 secondary=t["accent2"],
@@ -113,6 +140,11 @@ def main(page: ft.Page):
             ),
             font_family="Baskerville",
         )
+        # page.theme only applies in the phone's LIGHT mode; page.dark_theme
+        # applies in DARK mode. Set both so the palette looks the same
+        # whichever mode the phone is in.
+        page.theme = theme_obj
+        page.dark_theme = theme_obj
         page.update()
 
     # ---------------- shared empty-state renderer ----------------
@@ -1132,14 +1164,21 @@ def main(page: ft.Page):
     state["selected_tab"] = 0
     build_tab_row()
 
+    def on_theme_change(e):
+        """Theme dropdown: apply the pick, remember it for next launch,
+        then repaint everything that uses palette colors."""
+        apply_theme(e.control.value)
+        save_theme(e.control.value)
+        build_header_text()
+        build_tab_row()
+        build_stats_row()
+        refresh_body()
+
     theme_dropdown = ft.Dropdown(
         label="Theme",
-        value=DEFAULT_THEME,
+        value=state["theme"],  # the saved theme (or the default on first launch)
         options=[ft.DropdownOption(key=name, text=name) for name in theme_names()],
-        on_change=lambda e: (
-            apply_theme(e.control.value), build_header_text(), build_tab_row(),
-            build_stats_row(), refresh_body(),
-        ),
+        on_change=on_theme_change,
         width=200,
     )
 
@@ -1215,7 +1254,7 @@ def main(page: ft.Page):
         )
     )
 
-    apply_theme(DEFAULT_THEME)
+    apply_theme(state["theme"])
     build_header_text()
     build_stats_row()
     refresh_body()
